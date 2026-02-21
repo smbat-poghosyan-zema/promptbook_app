@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, BufReader, Read};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
@@ -28,10 +29,11 @@ pub enum OutputTransport {
     PtyPreferred,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ProcessOptions {
     pub timeout: Option<Duration>,
     pub output_transport: OutputTransport,
+    pub cwd: Option<PathBuf>,
 }
 
 impl Default for ProcessOptions {
@@ -39,6 +41,7 @@ impl Default for ProcessOptions {
         Self {
             timeout: None,
             output_transport: OutputTransport::Pipes,
+            cwd: None,
         }
     }
 }
@@ -148,6 +151,9 @@ fn spawn_with_pipes(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(cwd) = &options.cwd {
+        command.current_dir(cwd);
+    }
 
     #[cfg(unix)]
     {

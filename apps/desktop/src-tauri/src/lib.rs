@@ -9,6 +9,9 @@ const DB_FILENAME: &str = "promptbook-runner.sqlite3";
 
 pub mod process_exec;
 pub mod agent_adapter;
+pub mod run_manager;
+
+pub use run_manager::{cancel_run, run_promptbook, RunManagerError, RunManagerResult};
 
 pub type StorageResult<T> = Result<T, StorageError>;
 

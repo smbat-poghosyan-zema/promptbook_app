@@ -12,3 +12,5 @@ crate-type = ["rlib"]
 [dependencies]
 libc = "0.2"
 rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
