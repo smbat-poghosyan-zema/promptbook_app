@@ -1,0 +1,340 @@
+schema_version: "promptbook/v1"
+name: "promptbook-runner-linux-desktop"
+version: "0.1.0"
+description: >
+  Build a Linux-native local-first Promptbook Runner desktop app with adapter-based agent execution,
+  parallel runs, PTY streaming, progress tracking, persistence, and tests.
+
+defaults:
+  workspace_dir: "."
+  agent: "codex" # codex | claude | copilot
+  approval_mode: "auto" # auto | suggest (best-effort per agent)
+  timeout_minutes: 45
+
+global_rules:
+  - "Work in a git repo. Commit after each step with message 'step/<id>: <title>'."
+  - "TDD-first: add/adjust tests before implementing behavior."
+  - "No giant refactors unless required by failing tests."
+  - "After each step: run the required verification commands and ensure green."
+  - "If you get blocked by missing deps, add them with minimal scope and document in README."
+
+inputs:
+  prd_hint: >
+    You are building the Promptbook Runner desktop app described in the PRD/technical package.
+    Target MVP: Tauri + React + TypeScript + Rust backend engine.
+
+steps:
+  - id: "00-preflight"
+    title: "Preflight: repo init + toolchain checks + baseline docs"
+    agent: "codex"
+    prompt: |
+      You are in an EMPTY folder. Initialize the repository for a Linux desktop app.
+
+      Goals:
+      - Create a Git repo.
+      - Create a root README.md with:
+        - What the app is
+        - MVP features
+        - How to run (dev), test, build
+        - Required toolchain (Node 20+, pnpm, Rust stable, Tauri prerequisites)
+      - Create a docs/ folder with:
+        - docs/architecture.md (1 page MVP architecture overview)
+        - docs/promptbook-format.md (format choice: YAML v1, and why)
+      - Add .editorconfig, .gitignore, and basic repo hygiene.
+
+      Tests:
+      - None yet, but set up CI skeleton in .github/workflows/ci.yml that runs lint+test (will be filled later).
+
+      Output constraints:
+      - Keep it minimal but correct.
+
+    verify:
+      - "git status --porcelain"
+      - "test -f README.md"
+      - "test -f docs/architecture.md"
+      - "test -f docs/promptbook-format.md"
+
+  - id: "01-scaffold"
+    title: "Scaffold Tauri + React + TS monorepo, linting, unit test runners"
+    agent: "codex"
+    prompt: |
+      Scaffold a Tauri desktop app (Linux target) using:
+      - Tauri (v2 if stable in templates; otherwise latest stable)
+      - Vite + React + TypeScript
+      - pnpm workspace (root + apps/desktop + packages/shared)
+
+      Requirements:
+      - apps/desktop: Tauri app with React UI
+      - packages/shared: shared TS types + zod schemas (for promptbook + IPC payloads)
+      - Tooling:
+        - ESLint + Prettier
+        - Vitest for TS unit tests
+        - Rust unit tests in src-tauri
+      - Add scripts:
+        - pnpm dev (tauri dev)
+        - pnpm test (runs vitest + cargo test)
+        - pnpm lint
+        - pnpm build (tauri build)
+
+      Add a minimal “smoke” UI page that renders "Promptbook Runner" + build info.
+
+      Tests (TDD):
+      - Add 1 Vitest smoke test that imports a shared schema.
+      - Add 1 Rust test that asserts a simple function works (placeholder for engine).
+
+    verify:
+      - "pnpm -v"
+      - "pnpm install"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "02-promptbook-schema"
+    title: "Define YAML Promptbook v1 schema + validation + fixtures"
+    agent: "codex"
+    prompt: |
+      Implement Promptbook schema v1 in packages/shared:
+      - Use zod schemas with TypeScript inference.
+      - Support:
+        - schema_version, name, version, description
+        - defaults (agent, timeout, etc.)
+        - steps[] with id, title, prompt, verify[] (shell commands), agent override optional
+        - metadata (tags, created_at optional)
+      - Provide a loader that can:
+        - parse YAML -> JS object -> validate -> return typed object
+      - Add fixtures in packages/shared/test/fixtures:
+        - valid promptbook example
+        - invalid example (missing step id)
+      - Add Vitest tests:
+        - valid passes, invalid fails with readable error.
+
+      Also update docs/promptbook-format.md with the exact schema fields and a short rationale:
+      - YAML chosen for human-editing, comments, diffs.
+
+    verify:
+      - "pnpm test --filter shared"
+      - "node -e \"console.log('ok')\""
+
+  - id: "03-storage-model"
+    title: "Local-first persistence: SQLite schema + Rust data access layer"
+    agent: "codex"
+    prompt: |
+      Implement persistence in src-tauri (Rust):
+      - Use SQLite (rusqlite) stored under app data dir.
+      - Tables:
+        - runs(id, promptbook_name, promptbook_version, status, started_at, finished_at, agent_default, metadata_json)
+        - steps(id, run_id, step_id, title, status, started_at, finished_at)
+        - logs(id, run_id, step_id, ts, stream, line)
+        - outputs(id, run_id, step_id, ts, content, format)
+        - settings(key, value_json)
+      - Provide migrations (simple "initialize if not exists" is OK for MVP).
+      - Provide repository structs + methods:
+        - create_run, update_run_status
+        - create_step, update_step_status
+        - append_log_line
+        - set_step_output (final)
+        - list_runs, get_run_detail
+
+      Tests:
+      - Rust unit tests using temp DB file:
+        - create_run + list_runs returns it
+        - append logs, set output, retrieve
+
+    verify:
+      - "pnpm test --filter desktop"
+      - "pnpm test"
+
+  - id: "04-process-exec-core"
+    title: "Engine: subprocess execution + streaming + cancellation primitives"
+    agent: "codex"
+    prompt: |
+      Implement the execution core in Rust:
+      - Spawn child processes with streamed stdout/stderr lines.
+      - Support cancellation (kill process group) and timeouts.
+      - For Linux, prefer PTY where possible for richer output. If PTY is too heavy initially,
+        implement normal pipes first but keep a PTY abstraction.
+
+      Provide an abstraction:
+      - ProcessHandle { pid, cancel(), wait() }
+      - Stream events: OutputLine { stream: stdout|stderr, line, ts }
+
+      Tests:
+      - Spawn `bash -lc "for i in 1 2 3; do echo hi$i; sleep 0.1; done"` and assert you receive 3 lines.
+      - Spawn a long sleep and cancel it; assert it terminates.
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "05-agent-adapter-contract"
+    title: "Adapter system: AgentAdapter trait + 3 adapters (codex/claude/copilot) + dry-run adapter"
+    agent: "codex"
+    prompt: |
+      Implement an adapter/plugin design in Rust.
+
+      Define:
+      - trait AgentAdapter:
+          - name()
+          - build_command(step_prompt_file_path, workspace_dir, options) -> CommandSpec
+          - expected_streaming_behavior() -> enum { Streaming, MostlyFinal }
+
+      Implement adapters:
+      1) CodexAdapter:
+         - Command: `codex exec --full-auto --sandbox workspace-write "<INSTRUCTIONS>"` (non-interactive pattern)
+         - IMPORTANT: Codex streams progress to stderr and final result to stdout.
+      2) ClaudeAdapter:
+         - Command: `bash -lc 'cat <file> | claude -p "<system prompt>"'`
+      3) CopilotAdapter:
+         - Command: `copilot -p "<prompt>"` with safe defaults (no allow-all-tools by default).
+
+      Also implement DryRunAdapter for tests:
+      - Command: `bash -lc 'echo "FINAL: ok"; echo "progress..." 1>&2'`
+
+      Contract tests (Rust):
+      - For each adapter, verify build_command returns non-empty program + args.
+      - For DryRunAdapter, execute and assert:
+        - you capture at least 1 stderr progress line
+        - you capture 1 stdout final line
+
+      Update README with “How to configure agents” and note that tool approval differs per agent.
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+      - "pnpm build"
+
+  - id: "06-promptbook-runner-engine"
+    title: "Run orchestration: steps, statuses, logs, outputs"
+    agent: "codex"
+    prompt: |
+      Build the core Run Manager in Rust:
+      - Input: validated promptbook + selected agent default + workspace_dir
+      - For each step:
+        - persist step start
+        - generate step task file under app data or workspace `.promptbook_runs/<runId>/steps/<stepId>.md`
+        - execute adapter command in workspace_dir
+        - stream logs -> persist logs table
+        - on completion:
+          - persist final output (stdout final preferred; otherwise combine)
+          - mark step status success/failure
+          - if failure: stop run (MVP) unless promptbook says continue_on_error
+
+      Provide:
+      - run_promptbook(promptbook_path, agent, workspace_dir) -> run_id
+      - cancel_run(run_id)
+
+      Tests:
+      - Use DryRunAdapter to run a 2-step promptbook fixture:
+        - run completes
+        - steps persisted success
+        - logs + outputs exist
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "07-tauri-ipc"
+    title: "Tauri IPC: commands + event streaming to UI"
+    agent: "codex"
+    prompt: |
+      Expose the engine via Tauri:
+      - Tauri commands:
+        - list_runs()
+        - get_run_detail(run_id)
+        - start_run(promptbook_path, agent, workspace_dir) -> run_id
+        - cancel_run(run_id)
+        - open_file_picker_for_promptbook() (UI helper)
+      - Events:
+        - run_event: { run_id, step_id, type, payload } where type includes:
+          - step_started, step_progress_line, step_finished, run_finished
+
+      UI should be able to subscribe and update in real time.
+
+      Tests:
+      - Rust tests for serialization of IPC payload structs (serde_json roundtrip).
+      - Minimal integration sanity: command compilation.
+
+    verify:
+      - "pnpm test"
+      - "pnpm dev -- --help || true"
+
+  - id: "08-ui-mvp"
+    title: "UI MVP: dashboard + run detail + split views (live vs final)"
+    agent: "codex"
+    prompt: |
+      Implement UI in React:
+      - Left sidebar: Runs list (status, started_at)
+      - Main:
+        - Dashboard: start new run (select promptbook file, choose agent, workspace dir)
+        - Run detail:
+          - Step list with statuses
+          - Split view tabs/panes:
+            A) Live Progress (streaming lines)
+            B) Final Output (final per step, selectable)
+      - Provide clear empty states + error toasts.
+
+      Testing:
+      - Vitest component tests for:
+        - Run list renders mock data
+        - Run detail shows split views with mock events
+
+      Keep styling simple (system fonts, minimal CSS).
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+      - "pnpm dev"
+
+  - id: "09-parallelism"
+    title: "Parallel runs: concurrency model + per-run isolation + limits"
+    agent: "codex"
+    prompt: |
+      Implement parallel execution support:
+      - Allow multiple runs simultaneously.
+      - Use tokio tasks; store a RunHandle map keyed by run_id.
+      - Add configurable max_parallel_runs setting (default 2).
+      - Ensure logs/output persistence is thread-safe (use channel -> single writer or db mutex).
+
+      Tests:
+      - Start two DryRun runs concurrently and assert both finish and persist correctly.
+
+    verify:
+      - "pnpm test"
+
+  - id: "10-sample-promptbooks"
+    title: "Ship sample promptbooks in the SAME YAML v1 format + in-app load"
+    agent: "codex"
+    prompt: |
+      Add `sample-promptbooks/` folder in repo with:
+      - hello-world.v1.yaml: runs 2 steps using DryRun or Shell demo adapter
+      - repo-audit.v1.yaml: steps for “summarize repo, run tests, report risks” (agent-based, but safe)
+      - Make UI able to “Open sample promptbooks folder” and import one quickly.
+
+      Tests:
+      - shared schema validates these samples.
+
+    verify:
+      - "pnpm test"
+      - "test -f sample-promptbooks/hello-world.v1.yaml"
+
+  - id: "11-build-release"
+    title: "Build + packaging + final QA checklist"
+    agent: "codex"
+    prompt: |
+      Finalize:
+      - Ensure `pnpm build` produces a working Linux build.
+      - Update README with:
+        - Install prerequisites
+        - Run dev
+        - Run tests
+        - Build release
+        - Agent setup notes and security guidance
+
+      Add a QA checklist in docs/qa-checklist.md.
+
+      Final verification commands must be green.
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+      - "pnpm build"
+      - "test -f docs/qa-checklist.md"

@@ -1,0 +1,20 @@
+schema_version: "promptbook/v1"
+name: "hello-world"
+version: "1.0.0"
+description: "Sample promptbook v1 (used later inside the app as an example)."
+defaults:
+  agent: "codex"
+steps:
+  - id: "step-1"
+    title: "Create a file"
+    prompt: |
+      In the current repo, create a file `HELLO.txt` with content: "hello promptbook runner".
+    verify:
+      - "test -f HELLO.txt"
+      - "grep -q 'hello promptbook runner' HELLO.txt"
+  - id: "step-2"
+    title: "Summarize"
+    prompt: |
+      Summarize what you changed in 3 bullet points.
+    verify:
+      - "echo ok"
