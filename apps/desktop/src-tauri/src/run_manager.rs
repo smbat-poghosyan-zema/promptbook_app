@@ -4,17 +4,21 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
+use tokio::task::JoinHandle as TokioJoinHandle;
 
 use crate::agent_adapter::{
     AdapterOptions, AgentAdapter, ClaudeAdapter, CodexAdapter, CopilotAdapter, DryRunAdapter,
 };
 use crate::process_exec::{spawn_process, OutputStream, ProcessHandle, ProcessOptions};
 use crate::{NewLogLine, NewRun, NewStep, StepOutput, StorageError, StorageRepository};
+
+const DEFAULT_MAX_PARALLEL_RUNS: usize = 2;
+const MAX_PARALLEL_RUNS_SETTING_KEY: &str = "max_parallel_runs";
 
 pub type RunManagerResult<T> = Result<T, RunManagerError>;
 
@@ -95,9 +99,34 @@ struct PromptbookStep {
 }
 
 #[derive(Debug)]
-struct ActiveRunState {
+struct RunHandle {
     cancel_requested: Arc<AtomicBool>,
     current_process: Option<Arc<Mutex<ProcessHandle>>>,
+    task: Option<TokioJoinHandle<()>>,
+}
+
+#[derive(Debug)]
+struct ParallelRunLimiter {
+    state: Mutex<ParallelRunLimiterState>,
+    condvar: Condvar,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParallelRunLimiterState {
+    max_parallel_runs: usize,
+    active_runs: usize,
+}
+
+impl ParallelRunLimiter {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ParallelRunLimiterState {
+                max_parallel_runs: DEFAULT_MAX_PARALLEL_RUNS,
+                active_runs: 0,
+            }),
+            condvar: Condvar::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,9 +166,12 @@ struct PreparedRun {
     selected_agent: Option<String>,
     workspace_path: PathBuf,
     app_data_dir: PathBuf,
+    max_parallel_runs: usize,
 }
 
-static ACTIVE_RUNS: OnceLock<Mutex<HashMap<i64, ActiveRunState>>> = OnceLock::new();
+static RUN_HANDLES: OnceLock<Mutex<HashMap<i64, RunHandle>>> = OnceLock::new();
+static RUN_RUNTIME: OnceLock<TokioRuntime> = OnceLock::new();
+static PARALLEL_RUN_LIMITER: OnceLock<ParallelRunLimiter> = OnceLock::new();
 
 pub fn run_promptbook(
     promptbook_path: &str,
@@ -148,8 +180,11 @@ pub fn run_promptbook(
 ) -> RunManagerResult<i64> {
     let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
     let run_id = prepared.run_id;
-    register_active_run(run_id)?;
-    execute_prepared_run(prepared, None)?;
+    register_run_handle(run_id)?;
+    if let Err(err) = execute_prepared_run_with_limits(prepared, None) {
+        let _ = unregister_run_handle(run_id);
+        return Err(err);
+    }
     Ok(run_id)
 }
 
@@ -161,24 +196,17 @@ pub fn start_run_background(
 ) -> RunManagerResult<i64> {
     let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
     let run_id = prepared.run_id;
-    register_active_run(run_id)?;
-
+    register_run_handle(run_id)?;
     let app_data_dir = prepared.app_data_dir.clone();
-    let spawn_result = thread::Builder::new()
-        .name(format!("promptbook-run-{run_id}"))
-        .spawn(move || {
-            let _ = execute_prepared_run(prepared, event_callback);
-        });
-
-    if let Err(err) = spawn_result {
-        let _ = unregister_active_run(run_id);
-        if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir) {
-            let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+    let join_handle = run_runtime().spawn_blocking(move || {
+        if execute_prepared_run_with_limits(prepared, event_callback).is_err() {
+            let _ = unregister_run_handle(run_id);
+            if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir) {
+                let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+            }
         }
-        return Err(RunManagerError::ActiveRunState(format!(
-            "failed to spawn run thread: {err}"
-        )));
-    }
+    });
+    set_run_task(run_id, join_handle)?;
 
     Ok(run_id)
 }
@@ -193,6 +221,7 @@ fn prepare_run(
     let app_data_dir = workspace_path.join(".promptbook_runs");
     fs::create_dir_all(&app_data_dir)?;
     let repo = StorageRepository::open_in_app_data_dir(&app_data_dir)?;
+    let max_parallel_runs = read_max_parallel_runs(&repo);
 
     let selected_agent = normalize_agent(agent).or_else(|| promptbook.defaults.agent.clone());
     let run_started_at = now_timestamp();
@@ -212,7 +241,16 @@ fn prepare_run(
         selected_agent,
         workspace_path: workspace_path.to_path_buf(),
         app_data_dir,
+        max_parallel_runs,
     })
+}
+
+fn execute_prepared_run_with_limits(
+    prepared: PreparedRun,
+    event_callback: Option<RunEventCallback>,
+) -> RunManagerResult<()> {
+    let _parallel_run_slot = acquire_parallel_run_slot(prepared.max_parallel_runs)?;
+    execute_prepared_run(prepared, event_callback)
 }
 
 fn execute_prepared_run(
@@ -223,7 +261,7 @@ fn execute_prepared_run(
     let repo = match StorageRepository::open_in_app_data_dir(&prepared.app_data_dir) {
         Ok(repo) => repo,
         Err(err) => {
-            let _ = unregister_active_run(run_id);
+            let _ = unregister_run_handle(run_id);
             return Err(RunManagerError::from(err));
         }
     };
@@ -251,7 +289,7 @@ fn execute_prepared_run(
             ts: run_finished_at,
         },
     );
-    let unregister_result = unregister_active_run(run_id);
+    let unregister_result = unregister_run_handle(run_id);
 
     if let Err(err) = update_status_result {
         return Err(RunManagerError::from(err));
@@ -265,14 +303,14 @@ fn execute_prepared_run(
 
 pub fn cancel_run(run_id: i64) -> RunManagerResult<bool> {
     let process_handle = {
-        let mut guard = active_runs()
+        let mut guard = run_handles()
             .lock()
             .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
-        let Some(active_run) = guard.get_mut(&run_id) else {
+        let Some(run_handle) = guard.get_mut(&run_id) else {
             return Ok(false);
         };
-        active_run.cancel_requested.store(true, Ordering::SeqCst);
-        active_run.current_process.clone()
+        run_handle.cancel_requested.store(true, Ordering::SeqCst);
+        run_handle.current_process.clone()
     };
 
     if let Some(handle) = process_handle {
@@ -566,26 +604,117 @@ fn normalize_agent(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn active_runs() -> &'static Mutex<HashMap<i64, ActiveRunState>> {
-    ACTIVE_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+fn run_runtime() -> &'static TokioRuntime {
+    RUN_RUNTIME.get_or_init(|| {
+        TokioRuntimeBuilder::new_multi_thread()
+            .enable_all()
+            .thread_name("promptbook-runner")
+            .build()
+            .expect("failed to create run manager tokio runtime")
+    })
 }
 
-fn register_active_run(run_id: i64) -> RunManagerResult<()> {
-    let mut guard = active_runs()
+fn run_handles() -> &'static Mutex<HashMap<i64, RunHandle>> {
+    RUN_HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn parallel_run_limiter() -> &'static ParallelRunLimiter {
+    PARALLEL_RUN_LIMITER.get_or_init(ParallelRunLimiter::new)
+}
+
+fn read_max_parallel_runs(repo: &StorageRepository) -> usize {
+    if let Ok(value) = std::env::var("PROMPTBOOK_MAX_PARALLEL_RUNS") {
+        if let Ok(parsed) = value.trim().parse::<usize>() {
+            if parsed > 0 {
+                return parsed;
+            }
+        }
+    }
+
+    if let Ok(Some(value_json)) = repo.get_setting_value_json(MAX_PARALLEL_RUNS_SETTING_KEY) {
+        if let Some(parsed) = parse_max_parallel_runs_setting(&value_json) {
+            return parsed;
+        }
+    }
+
+    DEFAULT_MAX_PARALLEL_RUNS
+}
+
+fn parse_max_parallel_runs_setting(raw_value: &str) -> Option<usize> {
+    if let Ok(parsed) = serde_json::from_str::<usize>(raw_value) {
+        return (parsed > 0).then_some(parsed);
+    }
+    if let Ok(parsed) = raw_value.trim().parse::<usize>() {
+        return (parsed > 0).then_some(parsed);
+    }
+    if let Ok(as_string) = serde_json::from_str::<String>(raw_value) {
+        if let Ok(parsed) = as_string.trim().parse::<usize>() {
+            return (parsed > 0).then_some(parsed);
+        }
+    }
+    None
+}
+
+struct ParallelRunSlot;
+
+impl Drop for ParallelRunSlot {
+    fn drop(&mut self) {
+        let limiter = parallel_run_limiter();
+        if let Ok(mut state) = limiter.state.lock() {
+            if state.active_runs > 0 {
+                state.active_runs -= 1;
+            }
+            limiter.condvar.notify_one();
+        }
+    }
+}
+
+fn acquire_parallel_run_slot(max_parallel_runs: usize) -> RunManagerResult<ParallelRunSlot> {
+    let resolved_max = max_parallel_runs.max(1);
+    let limiter = parallel_run_limiter();
+    let mut state = limiter.state.lock().map_err(|_| {
+        RunManagerError::ActiveRunState("parallel run limiter mutex poisoned".to_string())
+    })?;
+    if state.max_parallel_runs != resolved_max {
+        state.max_parallel_runs = resolved_max;
+        limiter.condvar.notify_all();
+    }
+    while state.active_runs >= state.max_parallel_runs {
+        state = limiter.condvar.wait(state).map_err(|_| {
+            RunManagerError::ActiveRunState("parallel run limiter mutex poisoned".to_string())
+        })?;
+    }
+    state.active_runs += 1;
+    Ok(ParallelRunSlot)
+}
+
+fn register_run_handle(run_id: i64) -> RunManagerResult<()> {
+    let mut guard = run_handles()
         .lock()
         .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
     guard.insert(
         run_id,
-        ActiveRunState {
+        RunHandle {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             current_process: None,
+            task: None,
         },
     );
     Ok(())
 }
 
-fn unregister_active_run(run_id: i64) -> RunManagerResult<()> {
-    let mut guard = active_runs()
+fn set_run_task(run_id: i64, task: TokioJoinHandle<()>) -> RunManagerResult<()> {
+    let mut guard = run_handles()
+        .lock()
+        .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
+    if let Some(run_handle) = guard.get_mut(&run_id) {
+        run_handle.task = Some(task);
+    }
+    Ok(())
+}
+
+fn unregister_run_handle(run_id: i64) -> RunManagerResult<()> {
+    let mut guard = run_handles()
         .lock()
         .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
     guard.remove(&run_id);
@@ -596,25 +725,25 @@ fn set_active_process(
     run_id: i64,
     process: Option<Arc<Mutex<ProcessHandle>>>,
 ) -> RunManagerResult<()> {
-    let mut guard = active_runs()
+    let mut guard = run_handles()
         .lock()
         .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
-    let Some(active_run) = guard.get_mut(&run_id) else {
+    let Some(run_handle) = guard.get_mut(&run_id) else {
         return Err(RunManagerError::ActiveRunState(format!(
             "run_id {run_id} is not active"
         )));
     };
-    active_run.current_process = process;
+    run_handle.current_process = process;
     Ok(())
 }
 
 fn is_run_cancelled(run_id: i64) -> RunManagerResult<bool> {
-    let guard = active_runs()
+    let guard = run_handles()
         .lock()
         .map_err(|_| RunManagerError::ActiveRunState("active run mutex poisoned".to_string()))?;
     Ok(guard
         .get(&run_id)
-        .map(|active| active.cancel_requested.load(Ordering::SeqCst))
+        .map(|run_handle| run_handle.cancel_requested.load(Ordering::SeqCst))
         .unwrap_or(false))
 }
 
@@ -622,11 +751,13 @@ fn is_run_cancelled(run_id: i64) -> RunManagerResult<bool> {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::StorageRepository;
 
-    use super::run_promptbook;
+    use super::{run_promptbook, start_run_background};
 
     fn temp_workspace_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -665,6 +796,24 @@ steps:
         fs::write(&promptbook_path, promptbook_yaml.trim_start())
             .expect("write promptbook fixture");
         promptbook_path
+    }
+
+    fn wait_for_run_completion(app_data_dir: &Path, run_id: i64) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let repo = StorageRepository::open_in_app_data_dir(app_data_dir).expect("open db");
+            let detail = repo
+                .get_run_detail(run_id)
+                .expect("get run detail")
+                .expect("run detail exists");
+            if detail.run.status != "running" {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("run {run_id} did not finish before timeout");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     #[test]
@@ -709,6 +858,54 @@ steps:
             .join("step-2.md");
         assert!(step_one_prompt_path.exists(), "missing step-1 prompt file");
         assert!(step_two_prompt_path.exists(), "missing step-2 prompt file");
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn starts_two_dry_runs_in_parallel_and_persists_each_run() {
+        let workspace_dir = temp_workspace_dir("run-manager-dry-run-parallel");
+        let promptbook_path = write_two_step_fixture(&workspace_dir);
+
+        let run_id_one = start_run_background(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+        )
+        .expect("start first run");
+        let run_id_two = start_run_background(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+        )
+        .expect("start second run");
+        assert_ne!(run_id_one, run_id_two);
+
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
+        wait_for_run_completion(&app_data_dir, run_id_one);
+        wait_for_run_completion(&app_data_dir, run_id_two);
+
+        let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
+        for run_id in [run_id_one, run_id_two] {
+            let detail = repo
+                .get_run_detail(run_id)
+                .expect("get run detail")
+                .expect("run detail exists");
+            assert_eq!(detail.run.status, "success");
+            assert_eq!(detail.steps.len(), 2);
+            assert!(detail.steps.iter().all(|step| step.status == "success"));
+            assert!(!detail.logs.is_empty(), "expected persisted logs");
+            assert_eq!(detail.outputs.len(), 2);
+            assert!(
+                detail
+                    .outputs
+                    .iter()
+                    .all(|output| output.content.contains("FINAL: ok")),
+                "expected FINAL output for each step"
+            );
+        }
 
         let _ = fs::remove_dir_all(workspace_dir);
     }

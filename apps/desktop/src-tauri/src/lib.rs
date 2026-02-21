@@ -2,10 +2,13 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 const DB_FILENAME: &str = "promptbook-runner.sqlite3";
+static DB_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub mod process_exec;
 pub mod agent_adapter;
@@ -154,9 +157,14 @@ impl StorageRepository {
         }
 
         let conn = Connection::open(db_path)?;
+        conn.busy_timeout(Duration::from_secs(5))?;
         Self::migrate(&conn)?;
 
         Ok(Self { conn })
+    }
+
+    fn write_lock() -> &'static Mutex<()> {
+        DB_WRITE_LOCK.get_or_init(|| Mutex::new(()))
     }
 
     fn migrate(conn: &Connection) -> StorageResult<()> {
@@ -220,6 +228,9 @@ impl StorageRepository {
     }
 
     pub fn create_run(&self, new_run: &NewRun) -> StorageResult<i64> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             INSERT INTO runs
@@ -246,6 +257,9 @@ impl StorageRepository {
         status: &str,
         finished_at: Option<&str>,
     ) -> StorageResult<()> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             UPDATE runs
@@ -260,6 +274,9 @@ impl StorageRepository {
     }
 
     pub fn create_step(&self, new_step: &NewStep) -> StorageResult<i64> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             INSERT INTO steps
@@ -286,6 +303,9 @@ impl StorageRepository {
         status: &str,
         finished_at: Option<&str>,
     ) -> StorageResult<()> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             UPDATE steps
@@ -300,6 +320,9 @@ impl StorageRepository {
     }
 
     pub fn append_log_line(&self, log: &NewLogLine) -> StorageResult<i64> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             INSERT INTO logs
@@ -313,6 +336,9 @@ impl StorageRepository {
     }
 
     pub fn set_step_output(&self, output: &StepOutput) -> StorageResult<()> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
         self.conn.execute(
             "
             INSERT INTO outputs
@@ -333,6 +359,21 @@ impl StorageRepository {
         )?;
 
         Ok(())
+    }
+
+    pub fn get_setting_value_json(&self, key: &str) -> StorageResult<Option<String>> {
+        self.conn
+            .query_row(
+                "
+                SELECT value_json
+                FROM settings
+                WHERE key = ?1
+                ",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(StorageError::from)
     }
 
     pub fn list_runs(&self) -> StorageResult<Vec<RunRecord>> {
