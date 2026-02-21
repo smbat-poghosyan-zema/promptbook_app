@@ -10,7 +10,8 @@
     }
   },
   "scripts": {
-    "lint": "node ../../scripts/eslint-shim.mjs"
+    "lint": "node ../../scripts/eslint-shim.mjs",
+    "test": "node ./scripts/vitest-shim.mjs run"
   },
   "dependencies": {
     "zod": "workspace:*"

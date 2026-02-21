@@ -1,45 +1,73 @@
-# Promptbook Format Choice: YAML v1
+# Promptbook Format: YAML v1
 
-## Decision
+## Why YAML
 
-The MVP promptbook format is **YAML v1**.
+YAML is the selected v1 format because it is easier to edit by hand, supports inline comments, and produces clean git diffs for iterative prompt changes.
 
-## Why YAML v1
+## Schema Version
 
-1. Authoring ergonomics
-- YAML is readable for non-programmers and concise for prompt-heavy content.
-- Multiline strings are first-class, which helps with longer prompt templates.
-
-2. Versioned contract
-- A `version: v1` field allows strict parsing rules now and non-breaking evolution later.
-- The runner can branch behavior by explicit version instead of guessing schema intent.
-
-3. Tooling compatibility
-- Strong parser support in both Node.js and Rust ecosystems.
-- Easy integration with JSON Schema-style validation workflows.
-
-4. Operational simplicity
-- Human-diffable files for review in git.
-- No database or binary format needed for MVP.
-
-## MVP shape (illustrative)
+Every promptbook must declare:
 
 ```yaml
-version: v1
-name: hello-world
-steps:
-  - id: greet
-    type: prompt
-    prompt: |
-      Say hello to {{name}}.
-    input:
-      name: World
+schema_version: "promptbook/v1"
 ```
 
-## Non-goals for v1
+This keeps parsing deterministic and gives us a stable upgrade path for future versions.
 
-- Dynamic plugin step types.
-- Complex conditional branching.
-- Backward-compatibility for unversioned files.
+## Promptbook v1 Fields
 
-These can be layered in future versions behind explicit schema upgrades.
+Required root fields:
+
+- `schema_version`: literal `"promptbook/v1"`
+- `name`: promptbook name
+- `version`: promptbook version string
+- `description`: human-readable summary
+- `steps`: ordered list of executable steps
+
+Optional root fields:
+
+- `defaults`
+- `metadata`
+
+`defaults` fields:
+
+- `agent` (optional string)
+- `timeout_minutes` (optional integer, minimum 1)
+- `workspace_dir` (optional string)
+- `approval_mode` (optional string)
+
+`steps[]` fields:
+
+- `id` (required string)
+- `title` (required string)
+- `prompt` (required string, multiline supported)
+- `verify` (required string array of shell commands)
+- `agent` (optional string override)
+
+`metadata` fields:
+
+- `tags` (optional string array)
+- `created_at` (optional string)
+
+## Example
+
+```yaml
+schema_version: "promptbook/v1"
+name: "hello-world"
+version: "1.0.0"
+description: "Minimal promptbook example"
+defaults:
+  agent: "codex"
+  timeout_minutes: 20
+steps:
+  - id: "step-1"
+    title: "Create file"
+    prompt: |
+      Create HELLO.txt with content hello.
+    verify:
+      - "test -f HELLO.txt"
+metadata:
+  tags:
+    - "example"
+  created_at: "2026-02-21T00:00:00Z"
+```

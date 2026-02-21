@@ -1,0 +1,11 @@
+schema_version: "promptbook/v1"
+name: "invalid-fixture"
+version: "0.0.1"
+description: "Missing step id should fail schema validation."
+defaults:
+  agent: "codex"
+steps:
+  - title: "Step without id"
+    prompt: "This step is invalid."
+    verify:
+      - "echo should-fail"

@@ -49,6 +49,30 @@ class StringSchema extends Schema<string> {
   }
 }
 
+class NumberSchema extends Schema<number> {
+  int(): NumberSchema {
+    return new NumberSchema((input, path) => {
+      const value = this.parser(input, path);
+      if (!Number.isInteger(value)) {
+        throw new Error(`${path ?? "$input"} must be an integer`);
+      }
+
+      return value;
+    });
+  }
+
+  min(minValue: number): NumberSchema {
+    return new NumberSchema((input, path) => {
+      const value = this.parser(input, path);
+      if (value < minValue) {
+        throw new Error(`${path ?? "$input"} must be greater than or equal to ${minValue}`);
+      }
+
+      return value;
+    });
+  }
+}
+
 type ObjectShape = Record<string, Schema<unknown>>;
 
 type InferObject<TShape extends ObjectShape> = {
@@ -59,6 +83,16 @@ function string(): StringSchema {
   return new StringSchema((input, path) => {
     if (typeof input !== "string") {
       throw new Error(`${path ?? "$input"} must be a string`);
+    }
+
+    return input;
+  });
+}
+
+function number(): NumberSchema {
+  return new NumberSchema((input, path) => {
+    if (typeof input !== "number" || Number.isNaN(input)) {
+      throw new Error(`${path ?? "$input"} must be a number`);
     }
 
     return input;
@@ -128,6 +162,7 @@ declare module "./index" {
 
 export const z = {
   string,
+  number,
   literal,
   enum: enumValue,
   array,

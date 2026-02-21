@@ -1,0 +1,25 @@
+schema_version: "promptbook/v1"
+name: "schema-fixture"
+version: "1.2.3"
+description: "A valid promptbook fixture for schema tests."
+defaults:
+  agent: "codex"
+  timeout_minutes: 20
+steps:
+  - id: "step-1"
+    title: "Create file"
+    prompt: |
+      Create a file named test.txt.
+    verify:
+      - "test -f test.txt"
+  - id: "step-2"
+    title: "Summarize"
+    prompt: "Summarize the previous changes."
+    verify:
+      - "echo ok"
+    agent: "claude"
+metadata:
+  tags:
+    - "fixture"
+    - "schema"
+  created_at: "2026-02-21T00:00:00Z"
