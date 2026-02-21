@@ -7,42 +7,64 @@ Desktop app for running local Promptbook workflows on Linux using a Tauri shell 
 - `apps/desktop`: Tauri + React + TypeScript desktop UI shell
 - `packages/shared`: Shared Promptbook and IPC schemas/types (`zod`)
 
-## Toolchain requirements
+## Install prerequisites
 
-- Node.js 20+
-- pnpm 9+
-- Rust stable toolchain (`rustup`, `cargo`)
-- Tauri prerequisites for Linux:
-  - `webkit2gtk`
-  - `gtk3`
-  - `librsvg2`
-  - https://tauri.app/start/prerequisites/
-
-## Commands
+1. Install toolchains:
+   - Node.js 20+
+   - pnpm 9+
+   - Rust stable (`rustup`, `cargo`)
+2. Install Linux system packages required by Tauri:
+   - Follow the distro-specific instructions at https://tauri.app/start/prerequisites/
+3. Install workspace dependencies:
 
 ```bash
 pnpm install
+```
+
+## Run dev
+
+```bash
 pnpm dev
+```
+
+## Run tests
+
+```bash
 pnpm test
 pnpm lint
+```
+
+## Build release
+
+```bash
 pnpm build
 ```
 
-## How to Configure Agents
+On a full local setup, Tauri release artifacts are produced under `apps/desktop/src-tauri/target/release/bundle/`.
 
-The Rust backend defines an adapter contract for agent CLIs:
-- `codex`: runs `codex exec --full-auto --sandbox workspace-write "<instructions>"`
-- `claude`: runs `bash -lc 'cat <step-file> | claude -p "<system-prompt>"'`
-- `copilot`: runs `copilot -p "<prompt>"` with safe defaults (no allow-all-tools unless explicitly enabled)
-- `dry-run`: test adapter that emits final output on stdout and progress on stderr
+## Agent setup notes
+
+Agent adapter logic lives in `apps/desktop/src-tauri/src/agent_adapter.rs`. Supported adapters are:
+- `codex`
+- `claude`
+- `copilot`
+- `dry-run`
 
 Each adapter returns a `CommandSpec` with:
 - `program`
 - `args`
-- `cwd` (workspace directory)
+- `cwd`
 
-Tool approval and execution behavior differ per agent CLI. Keep adapter-specific safety defaults in place and only broaden permissions intentionally.
+Use per-step or default `agent` values from promptbook YAML (`promptbook/v1`) to choose adapters at runtime.
+
+## Security guidance
+
+- Keep least-privilege defaults in adapter commands.
+- Keep `copilot` in safe mode unless explicit expansion is required.
+- Prefer `workspace-write` sandboxes for agent execution.
+- Review step prompts and verification commands before running untrusted promptbooks.
+- Do not broaden filesystem/network permissions without a concrete need and audit trail.
 
 ## Offline sandbox note
 
-This scaffold includes local command shims for `tauri`, `vitest`, `eslint`, and `cargo` so verification can run in a no-network environment without Node/Rust package downloads. In a normal development machine, replace these shims with the official dependencies (`@tauri-apps/*`, Vite, React, Vitest, ESLint, Prettier, and Rust toolchain).
+This scaffold includes local command shims for `tauri`, `vitest`, `eslint`, and `cargo` so verification can run in a no-network environment without package downloads. On a normal development machine, use the official dependencies (`@tauri-apps/*`, Vite, React, Vitest, ESLint, Prettier, and Rust toolchain).
