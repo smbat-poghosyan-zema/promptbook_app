@@ -9,15 +9,23 @@ import {
 } from "./ui-model";
 
 type SplitPane = "live" | "final";
+type ToastVariant = "error" | "info";
 type Toast = {
   id: number;
   message: string;
+  variant: ToastVariant;
 };
 
 type DashboardForm = {
   promptbookPath: string;
   agent: string;
   workspaceDir: string;
+};
+
+type IpcSamplePromptbook = {
+  id: string;
+  title: string;
+  path: string;
 };
 
 type TauriListenerPayload<T> = {
@@ -27,6 +35,18 @@ type TauriListenerPayload<T> = {
 const BUILD_INFO = `v${__APP_VERSION__} (${import.meta.env.MODE})`;
 
 const AGENT_OPTIONS = ["codex", "claude", "copilot", "dry-run"];
+const FALLBACK_SAMPLE_PROMPTBOOKS: IpcSamplePromptbook[] = [
+  {
+    id: "hello-world",
+    title: "hello world",
+    path: "sample-promptbooks/hello-world.v1.yaml"
+  },
+  {
+    id: "repo-audit",
+    title: "repo audit",
+    path: "sample-promptbooks/repo-audit.v1.yaml"
+  }
+];
 
 const FALLBACK_RUNS: IpcRunRecord[] = [
   {
@@ -231,6 +251,8 @@ export function App() {
   const [isLoadingRunDetail, setIsLoadingRunDetail] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [samplePromptbooks, setSamplePromptbooks] = useState<IpcSamplePromptbook[]>([]);
+  const [selectedSampleId, setSelectedSampleId] = useState<string>("");
 
   const runList = useMemo(() => createRunListViewModel(runs), [runs]);
   const detailViewModel = useMemo(
@@ -238,14 +260,19 @@ export function App() {
     [runDetail, selectedOutputStepId]
   );
 
-  function pushErrorToast(message: string): void {
+  function pushToast(message: string, variant: ToastVariant = "error"): void {
     setToasts((current) => [
       ...current.slice(-2),
       {
         id: Date.now() + current.length,
-        message
+        message,
+        variant
       }
     ]);
+  }
+
+  function pushErrorToast(message: string): void {
+    pushToast(message, "error");
   }
 
   function dismissToast(id: number): void {
@@ -265,6 +292,19 @@ export function App() {
       pushErrorToast(`Failed to load runs: ${getErrorMessage(error)}`);
     } finally {
       setIsLoadingRuns(false);
+    }
+  }
+
+  async function loadSamplePromptbooks(): Promise<void> {
+    try {
+      if (!hasTauriRuntime()) {
+        setSamplePromptbooks(FALLBACK_SAMPLE_PROMPTBOOKS);
+        return;
+      }
+      const loaded = await invokeIpc<IpcSamplePromptbook[]>("list_sample_promptbooks");
+      setSamplePromptbooks(loaded);
+    } catch (error) {
+      pushErrorToast(`Failed to load sample promptbooks: ${getErrorMessage(error)}`);
     }
   }
 
@@ -291,7 +331,19 @@ export function App() {
 
   useEffect(() => {
     void loadRuns();
+    void loadSamplePromptbooks();
   }, []);
+
+  useEffect(() => {
+    if (samplePromptbooks.length === 0) {
+      setSelectedSampleId("");
+      return;
+    }
+    const selectedExists = samplePromptbooks.some((sample) => sample.id === selectedSampleId);
+    if (!selectedExists) {
+      setSelectedSampleId(samplePromptbooks[0]?.id ?? "");
+    }
+  }, [samplePromptbooks, selectedSampleId]);
 
   useEffect(() => {
     if (runs.length === 0) {
@@ -386,6 +438,34 @@ export function App() {
     } catch (error) {
       pushErrorToast(`Failed to open file picker: ${getErrorMessage(error)}`);
     }
+  }
+
+  async function handleOpenSamplePromptbooksFolder(): Promise<void> {
+    try {
+      if (!hasTauriRuntime()) {
+        pushToast("Sample promptbooks folder: sample-promptbooks", "info");
+        return;
+      }
+      const sampleFolderPath = await invokeIpc<string>("open_sample_promptbooks_folder");
+      pushToast(`Sample promptbooks folder: ${sampleFolderPath}`, "info");
+    } catch (error) {
+      pushErrorToast(`Failed to open sample promptbooks folder: ${getErrorMessage(error)}`);
+    }
+  }
+
+  function handleImportSamplePromptbook(): void {
+    if (samplePromptbooks.length === 0) {
+      pushErrorToast("No sample promptbooks available");
+      return;
+    }
+
+    const selected = samplePromptbooks.find((sample) => sample.id === selectedSampleId);
+    if (!selected) {
+      pushErrorToast("Select a sample promptbook first");
+      return;
+    }
+
+    setDashboard((current) => ({ ...current, promptbookPath: selected.path }));
   }
 
   async function handleStartRun(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -499,6 +579,40 @@ export function App() {
                 <button type="button" onClick={() => void handlePromptbookPicker()}>
                   Browse
                 </button>
+              </div>
+              <div className="sample-controls">
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => void handleOpenSamplePromptbooksFolder()}
+                >
+                  Open sample promptbooks folder
+                </button>
+                <div className="field-row">
+                  <select
+                    value={selectedSampleId}
+                    onChange={(event) => setSelectedSampleId(event.target.value)}
+                    disabled={samplePromptbooks.length === 0}
+                  >
+                    {samplePromptbooks.length === 0 ? (
+                      <option value="">No samples found</option>
+                    ) : (
+                      samplePromptbooks.map((sample) => (
+                        <option key={sample.id} value={sample.id}>
+                          {sample.title}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    className="secondary-action"
+                    disabled={samplePromptbooks.length === 0}
+                    onClick={handleImportSamplePromptbook}
+                  >
+                    Import sample
+                  </button>
+                </div>
               </div>
             </label>
 
@@ -624,7 +738,7 @@ export function App() {
 
       <div className="toast-stack" aria-live="polite" aria-atomic="true">
         {toasts.map((toast) => (
-          <div key={toast.id} role="alert" className="toast error">
+          <div key={toast.id} role="alert" className={`toast ${toast.variant}`}>
             <span>{toast.message}</span>
             <button type="button" onClick={() => dismissToast(toast.id)}>
               Dismiss

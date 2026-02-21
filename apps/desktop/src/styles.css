@@ -131,6 +131,17 @@ select {
   cursor: wait;
 }
 
+.sample-controls {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.dashboard-form .secondary-action {
+  justify-self: start;
+  background: #f8fafc;
+  color: #0f172a;
+}
+
 .run-detail {
   display: grid;
   grid-template-rows: auto auto auto 1fr;
@@ -249,14 +260,22 @@ select {
 }
 
 .toast {
-  border: 1px solid #fecaca;
-  background: #fff1f2;
   border-radius: 6px;
   padding: 0.6rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
+}
+
+.toast.error {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+}
+
+.toast.info {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
 }
 
 .toast button {

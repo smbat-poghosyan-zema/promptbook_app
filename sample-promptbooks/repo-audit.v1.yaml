@@ -1,0 +1,35 @@
+schema_version: "promptbook/v1"
+name: "repo-audit"
+version: "1.0.0"
+description: "Safe repo audit sample: summarize repository, run tests, and report risks."
+defaults:
+  agent: "codex"
+  workspace_dir: "."
+  timeout_minutes: 25
+steps:
+  - id: "step-summarize"
+    title: "Summarize repository"
+    prompt: |
+      Inspect the repository structure and summarize key apps/packages in concise bullets.
+      Do not modify files in this step.
+    verify:
+      - "test -f README.md"
+  - id: "step-tests"
+    title: "Run test suite"
+    prompt: |
+      Run the project test command and capture a short result summary.
+      If tests fail, include the failing command and first failure reason.
+    verify:
+      - "pnpm test"
+  - id: "step-risks"
+    title: "Report risks"
+    prompt: |
+      Report the top implementation risks you observed, ordered by severity.
+      Include at least one concrete mitigation per risk.
+    verify:
+      - "echo ok"
+metadata:
+  tags:
+    - "sample"
+    - "audit"
+  created_at: "2026-02-21T00:15:35Z"

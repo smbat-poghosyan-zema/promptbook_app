@@ -25,4 +25,26 @@ describe("promptbook schema loader", () => {
       "$input.steps[0].id"
     );
   });
+
+  it("validates sample hello-world promptbook", () => {
+    const samplePath = fileURLToPath(
+      new URL("../../../sample-promptbooks/hello-world.v1.yaml", import.meta.url)
+    );
+
+    const promptbook = loadPromptbookFromYamlFile(samplePath);
+
+    expect(promptbook.name).toBe("hello-world");
+    expect(promptbook.steps.length).toBe(2);
+  });
+
+  it("validates sample repo-audit promptbook", () => {
+    const samplePath = fileURLToPath(
+      new URL("../../../sample-promptbooks/repo-audit.v1.yaml", import.meta.url)
+    );
+
+    const promptbook = loadPromptbookFromYamlFile(samplePath);
+
+    expect(promptbook.name).toBe("repo-audit");
+    expect(promptbook.steps.length).toBe(3);
+  });
 });

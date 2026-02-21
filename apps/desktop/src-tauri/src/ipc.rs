@@ -257,6 +257,68 @@ pub fn open_file_picker_for_promptbook() -> IpcResult<Option<String>> {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpcSamplePromptbook {
+    pub id: String,
+    pub title: String,
+    pub path: String,
+}
+
+fn resolve_sample_promptbooks_dir() -> IpcResult<PathBuf> {
+    if let Ok(configured) = std::env::var("PROMPTBOOK_SAMPLE_DIR") {
+        let configured_path = PathBuf::from(configured);
+        if configured_path.is_dir() {
+            return Ok(configured_path);
+        }
+    }
+
+    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+    for ancestor in cwd.ancestors() {
+        let candidate = ancestor.join("sample-promptbooks");
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+    }
+
+    Err("sample-promptbooks directory not found".to_string())
+}
+
+#[cfg_attr(feature = "tauri", tauri::command)]
+pub fn open_sample_promptbooks_folder() -> IpcResult<String> {
+    let sample_dir = resolve_sample_promptbooks_dir()?;
+    Ok(sample_dir.to_string_lossy().to_string())
+}
+
+#[cfg_attr(feature = "tauri", tauri::command)]
+pub fn list_sample_promptbooks() -> IpcResult<Vec<IpcSamplePromptbook>> {
+    let sample_dir = resolve_sample_promptbooks_dir()?;
+    let mut samples: Vec<IpcSamplePromptbook> = std::fs::read_dir(&sample_dir)
+        .map_err(|err| err.to_string())?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.ends_with(".v1.yaml"))
+        })
+        .filter_map(|path| {
+            let file_name = path.file_name()?.to_str()?.to_string();
+            let id = file_name.trim_end_matches(".v1.yaml").to_string();
+            let title = id.replace('-', " ");
+            Some(IpcSamplePromptbook {
+                id,
+                title,
+                path: path.to_string_lossy().to_string(),
+            })
+        })
+        .collect();
+
+    samples.sort_by(|left, right| left.id.cmp(&right.id));
+    Ok(samples)
+}
+
 fn map_run_event(event: RunEvent) -> RunEventEnvelope {
     match event {
         RunEvent::StepStarted {
@@ -318,8 +380,10 @@ fn map_run_event(event: RunEvent) -> RunEventEnvelope {
 #[cfg(test)]
 mod tests {
     use super::{
-        cancel_run, get_run_detail, list_runs, open_file_picker_for_promptbook, start_run, IpcResult,
-        IpcRunDetail, IpcRunRecord, IpcState, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
+        cancel_run, get_run_detail, list_runs, list_sample_promptbooks,
+        open_file_picker_for_promptbook, open_sample_promptbooks_folder, start_run, IpcResult,
+        IpcRunDetail, IpcRunRecord, IpcSamplePromptbook, IpcState, RunEventEnvelope, RunEventType,
+        RUN_EVENT_NAME,
     };
     use serde_json::json;
 
@@ -371,6 +435,8 @@ mod tests {
         let _start_run: fn(&IpcState, &str, Option<&str>, &str) -> IpcResult<i64> = start_run;
         let _cancel_run: fn(i64) -> IpcResult<bool> = cancel_run;
         let _picker: fn() -> IpcResult<Option<String>> = open_file_picker_for_promptbook;
+        let _open_samples_folder: fn() -> IpcResult<String> = open_sample_promptbooks_folder;
+        let _sample_list: fn() -> IpcResult<Vec<IpcSamplePromptbook>> = list_sample_promptbooks;
         assert_eq!(RUN_EVENT_NAME, "run_event");
     }
 }
