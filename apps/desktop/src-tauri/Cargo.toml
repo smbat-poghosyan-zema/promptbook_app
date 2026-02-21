@@ -10,3 +10,4 @@ name = "promptbook_runner_lib"
 crate-type = ["rlib"]
 
 [dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
