@@ -28,6 +28,21 @@ pnpm lint
 pnpm build
 ```
 
+## How to Configure Agents
+
+The Rust backend defines an adapter contract for agent CLIs:
+- `codex`: runs `codex exec --full-auto --sandbox workspace-write "<instructions>"`
+- `claude`: runs `bash -lc 'cat <step-file> | claude -p "<system-prompt>"'`
+- `copilot`: runs `copilot -p "<prompt>"` with safe defaults (no allow-all-tools unless explicitly enabled)
+- `dry-run`: test adapter that emits final output on stdout and progress on stderr
+
+Each adapter returns a `CommandSpec` with:
+- `program`
+- `args`
+- `cwd` (workspace directory)
+
+Tool approval and execution behavior differ per agent CLI. Keep adapter-specific safety defaults in place and only broaden permissions intentionally.
+
 ## Offline sandbox note
 
 This scaffold includes local command shims for `tauri`, `vitest`, `eslint`, and `cargo` so verification can run in a no-network environment without Node/Rust package downloads. In a normal development machine, replace these shims with the official dependencies (`@tauri-apps/*`, Vite, React, Vitest, ESLint, Prettier, and Rust toolchain).
