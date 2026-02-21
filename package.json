@@ -1,5 +1,11 @@
 {
-	"devDependencies": {
-		"yaml": "^2.8.2"
-	}
+  "name": "promptbook-runner-linux-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "pnpm --filter @promptbook/desktop dev",
+    "test": "pnpm --filter @promptbook/desktop test",
+    "lint": "pnpm -r --if-present lint",
+    "build": "pnpm --filter @promptbook/desktop build"
+  }
 }

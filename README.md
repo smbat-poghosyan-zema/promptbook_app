@@ -2,12 +2,10 @@
 
 Desktop app for running local Promptbook workflows on Linux using a Tauri shell (Rust backend + web frontend).
 
-## MVP features
+## Workspace layout
 
-- Open and run Promptbook files from the local filesystem.
-- Show step-by-step run status and logs.
-- Store run artifacts in a local workspace folder.
-- Support YAML v1 promptbook format with deterministic step execution.
+- `apps/desktop`: Tauri + React + TypeScript desktop UI shell
+- `packages/shared`: Shared Promptbook and IPC schemas/types (`zod`)
 
 ## Toolchain requirements
 
@@ -18,15 +16,18 @@ Desktop app for running local Promptbook workflows on Linux using a Tauri shell 
   - `webkit2gtk`
   - `gtk3`
   - `librsvg2`
-  - See: https://tauri.app/start/prerequisites/
+  - https://tauri.app/start/prerequisites/
 
 ## Commands
 
-The scripts below are the intended MVP workflow; concrete implementations are added in later steps.
-
 ```bash
 pnpm install
-pnpm run dev
-pnpm run test
-pnpm run build
+pnpm dev
+pnpm test
+pnpm lint
+pnpm build
 ```
+
+## Offline sandbox note
+
+This scaffold includes local command shims for `tauri`, `vitest`, `eslint`, and `cargo` so verification can run in a no-network environment without Node/Rust package downloads. In a normal development machine, replace these shims with the official dependencies (`@tauri-apps/*`, Vite, React, Vitest, ESLint, Prettier, and Rust toolchain).

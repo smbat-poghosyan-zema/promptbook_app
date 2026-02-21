@@ -1,0 +1,12 @@
+[package]
+name = "promptbook-runner"
+version = "0.1.0"
+description = "Promptbook Runner desktop shell"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "promptbook_runner_lib"
+crate-type = ["rlib"]
+
+[dependencies]

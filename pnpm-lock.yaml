@@ -6,19 +6,18 @@ settings:
 
 importers:
 
-  .:
-    devDependencies:
-      yaml:
-        specifier: ^2.8.2
-        version: 2.8.2
+  .: {}
 
-packages:
+  apps/desktop:
+    dependencies:
+      '@promptbook/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
 
-  yaml@2.8.2:
-    resolution: {integrity: sha512-mplynKqc1C2hTVYxd0PU2xQAc22TI1vShAYGksCCfxbn/dFwnHTNi1bvYsBTkhdUNtGIf5xNOg938rrSSYvS9A==}
-    engines: {node: '>= 14.6'}
-    hasBin: true
+  packages/shared:
+    dependencies:
+      zod:
+        specifier: workspace:*
+        version: link:../zod
 
-snapshots:
-
-  yaml@2.8.2: {}
+  packages/zod: {}

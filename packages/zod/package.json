@@ -1,0 +1,11 @@
+{
+  "name": "zod",
+  "version": "0.0.0-local",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  }
+}

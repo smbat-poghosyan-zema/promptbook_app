@@ -1,0 +1,19 @@
+{
+  "name": "@promptbook/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm tauri dev",
+    "build": "pnpm tauri build",
+    "lint": "pnpm eslint . --max-warnings=0",
+    "test": "pnpm vitest run && pnpm cargo test --manifest-path src-tauri/Cargo.toml",
+    "tauri": "node ./scripts/tauri-shim.mjs",
+    "vitest": "node ./scripts/vitest-shim.mjs",
+    "eslint": "node ../../scripts/eslint-shim.mjs",
+    "cargo": "node ./scripts/cargo-shim.mjs"
+  },
+  "dependencies": {
+    "@promptbook/shared": "workspace:*"
+  }
+}
