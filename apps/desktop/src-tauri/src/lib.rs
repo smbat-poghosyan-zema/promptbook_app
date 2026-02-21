@@ -7,6 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 const DB_FILENAME: &str = "promptbook-runner.sqlite3";
 
+pub mod process_exec;
+
 pub type StorageResult<T> = Result<T, StorageError>;
 
 #[derive(Debug)]
