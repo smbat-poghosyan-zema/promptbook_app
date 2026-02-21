@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
@@ -99,6 +100,45 @@ struct ActiveRunState {
     current_process: Option<Arc<Mutex<ProcessHandle>>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunEvent {
+    StepStarted {
+        run_id: i64,
+        step_id: String,
+        title: String,
+        ts: String,
+    },
+    StepProgressLine {
+        run_id: i64,
+        step_id: String,
+        stream: String,
+        line: String,
+        ts: String,
+    },
+    StepFinished {
+        run_id: i64,
+        step_id: String,
+        status: String,
+        ts: String,
+    },
+    RunFinished {
+        run_id: i64,
+        status: String,
+        ts: String,
+    },
+}
+
+pub type RunEventCallback = Arc<dyn Fn(RunEvent) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone)]
+struct PreparedRun {
+    run_id: i64,
+    promptbook: PromptbookFile,
+    selected_agent: Option<String>,
+    workspace_path: PathBuf,
+    app_data_dir: PathBuf,
+}
+
 static ACTIVE_RUNS: OnceLock<Mutex<HashMap<i64, ActiveRunState>>> = OnceLock::new();
 
 pub fn run_promptbook(
@@ -106,6 +146,48 @@ pub fn run_promptbook(
     agent: Option<&str>,
     workspace_dir: &str,
 ) -> RunManagerResult<i64> {
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
+    let run_id = prepared.run_id;
+    register_active_run(run_id)?;
+    execute_prepared_run(prepared, None)?;
+    Ok(run_id)
+}
+
+pub fn start_run_background(
+    promptbook_path: &str,
+    agent: Option<&str>,
+    workspace_dir: &str,
+    event_callback: Option<RunEventCallback>,
+) -> RunManagerResult<i64> {
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
+    let run_id = prepared.run_id;
+    register_active_run(run_id)?;
+
+    let app_data_dir = prepared.app_data_dir.clone();
+    let spawn_result = thread::Builder::new()
+        .name(format!("promptbook-run-{run_id}"))
+        .spawn(move || {
+            let _ = execute_prepared_run(prepared, event_callback);
+        });
+
+    if let Err(err) = spawn_result {
+        let _ = unregister_active_run(run_id);
+        if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir) {
+            let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+        }
+        return Err(RunManagerError::ActiveRunState(format!(
+            "failed to spawn run thread: {err}"
+        )));
+    }
+
+    Ok(run_id)
+}
+
+fn prepare_run(
+    promptbook_path: &str,
+    agent: Option<&str>,
+    workspace_dir: &str,
+) -> RunManagerResult<PreparedRun> {
     let promptbook = load_promptbook(Path::new(promptbook_path))?;
     let workspace_path = Path::new(workspace_dir);
     let app_data_dir = workspace_path.join(".promptbook_runs");
@@ -124,29 +206,61 @@ pub fn run_promptbook(
         metadata_json: Some(format!("{{\"promptbook_path\":\"{promptbook_path}\"}}")),
     })?;
 
-    register_active_run(run_id)?;
+    Ok(PreparedRun {
+        run_id,
+        promptbook,
+        selected_agent,
+        workspace_path: workspace_path.to_path_buf(),
+        app_data_dir,
+    })
+}
 
+fn execute_prepared_run(
+    prepared: PreparedRun,
+    event_callback: Option<RunEventCallback>,
+) -> RunManagerResult<()> {
+    let run_id = prepared.run_id;
+    let repo = match StorageRepository::open_in_app_data_dir(&prepared.app_data_dir) {
+        Ok(repo) => repo,
+        Err(err) => {
+            let _ = unregister_active_run(run_id);
+            return Err(RunManagerError::from(err));
+        }
+    };
     let execution_result = execute_steps(
         &repo,
         run_id,
-        &promptbook,
-        selected_agent.as_deref(),
-        workspace_path,
-        &app_data_dir,
+        &prepared.promptbook,
+        prepared.selected_agent.as_deref(),
+        &prepared.workspace_path,
+        &prepared.app_data_dir,
+        event_callback.as_ref(),
     );
 
-    unregister_active_run(run_id)?;
+    let run_status = execution_result
+        .as_ref()
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|_| "failure".to_string());
+    let run_finished_at = now_timestamp();
+    let update_status_result = repo.update_run_status(run_id, &run_status, Some(&run_finished_at));
+    emit_run_event(
+        event_callback.as_ref(),
+        RunEvent::RunFinished {
+            run_id,
+            status: run_status,
+            ts: run_finished_at,
+        },
+    );
+    let unregister_result = unregister_active_run(run_id);
 
-    match execution_result {
-        Ok(run_status) => {
-            repo.update_run_status(run_id, &run_status, Some(&now_timestamp()))?;
-            Ok(run_id)
-        }
-        Err(err) => {
-            let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
-            Err(err)
-        }
+    if let Err(err) = update_status_result {
+        return Err(RunManagerError::from(err));
     }
+    if let Err(err) = unregister_result {
+        return Err(err);
+    }
+
+    execution_result.map(|_| ())
 }
 
 pub fn cancel_run(run_id: i64) -> RunManagerResult<bool> {
@@ -178,6 +292,7 @@ fn execute_steps(
     selected_agent: Option<&str>,
     workspace_path: &Path,
     app_data_dir: &Path,
+    event_callback: Option<&RunEventCallback>,
 ) -> RunManagerResult<String> {
     let default_agent = selected_agent
         .map(ToOwned::to_owned)
@@ -201,9 +316,18 @@ fn execute_steps(
             step_id: step.id.clone(),
             title: step.title.clone(),
             status: "running".to_string(),
-            started_at: Some(step_started_at),
+            started_at: Some(step_started_at.clone()),
             finished_at: None,
         })?;
+        emit_run_event(
+            event_callback,
+            RunEvent::StepStarted {
+                run_id,
+                step_id: step.id.clone(),
+                title: step.title.clone(),
+                ts: step_started_at,
+            },
+        );
 
         let step_prompt_path = write_step_task_file(app_data_dir, run_id, step, workspace_path)?;
         let step_agent = step.agent.as_deref().unwrap_or(default_agent.as_str());
@@ -243,18 +367,30 @@ fn execute_steps(
                 OutputStream::Stdout => "stdout",
                 OutputStream::Stderr => "stderr",
             };
+            let line = event.line;
+            let ts = timestamp_for(event.ts);
             if event.stream == OutputStream::Stdout {
-                stdout_lines.push(event.line.clone());
+                stdout_lines.push(line.clone());
             }
-            combined_lines.push(event.line.clone());
+            combined_lines.push(line.clone());
 
             repo.append_log_line(&NewLogLine {
                 run_id,
                 step_id: step.id.clone(),
-                ts: timestamp_for(event.ts),
+                ts: ts.clone(),
                 stream: stream.to_string(),
-                line: event.line,
+                line: line.clone(),
             })?;
+            emit_run_event(
+                event_callback,
+                RunEvent::StepProgressLine {
+                    run_id,
+                    step_id: step.id.clone(),
+                    stream: stream.to_string(),
+                    line,
+                    ts,
+                },
+            );
         }
 
         let process_exit = {
@@ -288,6 +424,19 @@ fn execute_steps(
             if step_failed { "failure" } else { "success" },
             Some(&now_timestamp()),
         )?;
+        emit_run_event(
+            event_callback,
+            RunEvent::StepFinished {
+                run_id,
+                step_id: step.id.clone(),
+                status: if step_failed {
+                    "failure".to_string()
+                } else {
+                    "success".to_string()
+                },
+                ts: now_timestamp(),
+            },
+        );
 
         if step_failed {
             run_status = "failure".to_string();
@@ -299,6 +448,12 @@ fn execute_steps(
     }
 
     Ok(run_status)
+}
+
+fn emit_run_event(event_callback: Option<&RunEventCallback>, event: RunEvent) {
+    if let Some(callback) = event_callback {
+        callback(event);
+    }
 }
 
 fn create_adapter(agent_name: &str) -> RunManagerResult<Box<dyn AgentAdapter>> {
