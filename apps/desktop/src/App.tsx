@@ -5,6 +5,7 @@ import {
   applyRunEvent,
   createRunDetailViewModel,
   createRunListViewModel,
+  promptbookParentDir,
   type IpcModelInfo,
   type IpcRunDetail,
   type IpcRunRecord,
@@ -234,7 +235,12 @@ export function App() {
     try {
       const selectedPath = await invoke<string | null>("open_file_picker_for_promptbook");
       if (selectedPath) {
-        setDashboard((current) => ({ ...current, promptbookPath: selectedPath }));
+        const parentDir = promptbookParentDir(selectedPath);
+        setDashboard((current) => ({
+          ...current,
+          promptbookPath: selectedPath,
+          workspaceDir: parentDir,
+        }));
       }
     } catch (error) {
       pushErrorToast(`Failed to open file picker: ${getErrorMessage(error)}`);
@@ -261,7 +267,12 @@ export function App() {
       return;
     }
 
-    setDashboard((current) => ({ ...current, promptbookPath: selected.path }));
+    const parentDir = promptbookParentDir(selected.path);
+    setDashboard((current) => ({
+      ...current,
+      promptbookPath: selected.path,
+      workspaceDir: parentDir,
+    }));
   }
 
   function toggleStepExpanded(stepId: string): void {

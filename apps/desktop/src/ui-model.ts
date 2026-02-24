@@ -69,6 +69,11 @@ export type RunEventEnvelope = {
   payload: Record<string, unknown>;
 };
 
+export function promptbookParentDir(path: string): string {
+  const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return lastSep > 0 ? path.slice(0, lastSep) : ".";
+}
+
 export function formatRunStatus(status: string): string {
   switch (status) {
     case "running": return "in progress";

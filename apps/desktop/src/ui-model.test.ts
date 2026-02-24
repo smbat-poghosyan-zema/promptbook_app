@@ -3,6 +3,7 @@ import {
   createRunDetailViewModel,
   createRunListViewModel,
   formatRunStatus,
+  promptbookParentDir,
   type IpcModelInfo,
   type IpcRunDetail,
   type IpcRunRecord,
@@ -59,6 +60,21 @@ function buildRunDetail(): IpcRunDetail {
     ]
   };
 }
+
+describe("promptbookParentDir", () => {
+  it("extracts parent dir from unix path", () => {
+    expect(promptbookParentDir("/home/user/project/promptbooks/foo.yaml"))
+      .toBe("/home/user/project/promptbooks");
+  });
+
+  it("returns '.' for bare filename", () => {
+    expect(promptbookParentDir("hello.yaml")).toBe(".");
+  });
+
+  it("handles windows path separators", () => {
+    expect(promptbookParentDir("C:\\Users\\bob\\foo.yaml")).toBe("C:\\Users\\bob");
+  });
+});
 
 describe("formatRunStatus", () => {
   it("maps running to in progress", () => {
