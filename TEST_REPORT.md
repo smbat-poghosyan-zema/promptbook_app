@@ -62,6 +62,45 @@ This session built out the complete Promptbook Runner desktop application (Tauri
 | `pnpm lint` (eslint, max-warnings=0) | ✅ 0 warnings / 0 errors |
 | `vite build` (frontend) | ✅ built in ~557ms |
 
+## Round 2 Polish (ui-polish v1.0.0)
+
+**Date:** 2026-02-24
+
+### What Was Changed
+
+| Commit | Description |
+|--------|-------------|
+| `fix/runs-panel-layout` | Runs panel: layout spacing improvements + human-readable status labels |
+| `fix/fix-model-registry` | Agent model registry corrected with real, accurate model IDs |
+| `fix/step-row-redesign` | Run Detail: step rows with STEP prefix + inline stop/resume buttons |
+
+### Final Test Counts
+
+#### TypeScript / Vitest
+| Package | Test Files | Tests Passed |
+|---------|-----------|--------------|
+| `packages/shared` | 2 | 12 |
+| `apps/desktop` | 3 | 21 |
+| **Total** | **5** | **33** |
+
+#### Rust / Cargo
+| Crate | Tests Passed |
+|-------|-------------|
+| `promptbook_runner_lib` | 26 |
+| `main.rs` unittests | 0 |
+| doc-tests | 0 |
+| **Total** | **26** |
+
+### Lint Status
+
+| Command | Result |
+|---------|--------|
+| `pnpm test` | ✅ 33 passed, 0 failed |
+| `cargo test` | ✅ 26 passed, 0 failed |
+| `pnpm lint` (eslint, max-warnings=0) | ✅ 0 warnings / 0 errors |
+
+---
+
 ## Coverage Gaps / Known Limitations
 
 - Frontend interaction testing remains lightweight (render + view-model logic only); no full DOM click/type/async UI interaction flows.
