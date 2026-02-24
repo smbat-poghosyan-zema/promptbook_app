@@ -119,6 +119,21 @@ This session built out the complete Promptbook Runner desktop application (Tauri
 
 ---
 
+## Round 4 Polish (ux-round4 v1.0.0)
+### Changes
+- Step rows: first click activates, second click expands prompt
+- Player icons properly centered (inline-flex + optical nudge)
+- Previous runs always visible on fresh app open (fixed DB path)
+- Workspace dir auto-set from selected promptbook's parent directory
+- Live Progress / Final Output: fixed 320px height with scroll
+- Default window 1440×900 with 900×600 minimum
+### Final test counts
+- TypeScript: 42 passed (packages/shared: 12, apps/desktop: 30)
+- Rust: 24 passed
+- Lint: 0 errors
+
+---
+
 ## Coverage Gaps / Known Limitations
 
 - Frontend interaction testing remains lightweight (render + view-model logic only); no full DOM click/type/async UI interaction flows.
