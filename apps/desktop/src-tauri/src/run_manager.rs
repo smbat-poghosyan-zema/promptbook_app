@@ -402,6 +402,35 @@ fn execute_steps(
         .map(ToOwned::to_owned)
         .or_else(|| promptbook.defaults.agent.clone())
         .unwrap_or_else(|| "codex".to_string());
+    let adapter_options = AdapterOptions {
+        model: selected_model.map(ToOwned::to_owned),
+        effort_level: selected_effort.map(ToOwned::to_owned),
+        ..AdapterOptions::default()
+    };
+    execute_steps_from(
+        repo,
+        run_id,
+        promptbook,
+        &default_agent,
+        workspace_path,
+        app_data_dir,
+        from_step_id,
+        adapter_options,
+        event_callback,
+    )
+}
+
+fn execute_steps_from(
+    repo: &StorageRepository,
+    run_id: i64,
+    promptbook: &PromptbookFile,
+    default_agent: &str,
+    workspace_path: &Path,
+    app_data_dir: &Path,
+    from_step_id: Option<&str>,
+    adapter_options: AdapterOptions,
+    event_callback: Option<&RunEventCallback>,
+) -> RunManagerResult<String> {
     let run_continue_on_error = promptbook
         .continue_on_error
         .or(promptbook.defaults.continue_on_error)
@@ -438,13 +467,8 @@ fn execute_steps(
         );
 
         let step_prompt_path = write_step_task_file(app_data_dir, run_id, step, workspace_path)?;
-        let step_agent = step.agent.as_deref().unwrap_or(default_agent.as_str());
+        let step_agent = step.agent.as_deref().unwrap_or(default_agent);
         let adapter = create_adapter(step_agent)?;
-        let adapter_options = AdapterOptions {
-            model: selected_model.map(ToOwned::to_owned),
-            effort_level: selected_effort.map(ToOwned::to_owned),
-            ..AdapterOptions::default()
-        };
         let command_spec = adapter.build_command(
             &step_prompt_path.to_string_lossy(),
             &workspace_path.to_string_lossy(),
@@ -821,6 +845,154 @@ fn is_run_cancelled(run_id: i64) -> RunManagerResult<bool> {
         .unwrap_or(false))
 }
 
+struct RunMetadataFields {
+    promptbook_path: Option<String>,
+    workspace_dir: Option<String>,
+    model: Option<String>,
+    effort_level: Option<String>,
+}
+
+fn parse_run_metadata_json(metadata: Option<&str>) -> RunMetadataFields {
+    let Some(json) = metadata else {
+        return RunMetadataFields {
+            promptbook_path: None,
+            workspace_dir: None,
+            model: None,
+            effort_level: None,
+        };
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return RunMetadataFields {
+            promptbook_path: None,
+            workspace_dir: None,
+            model: None,
+            effort_level: None,
+        };
+    };
+    RunMetadataFields {
+        promptbook_path: value
+            .get("promptbook_path")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+        workspace_dir: value
+            .get("workspace_dir")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+        model: value
+            .get("model")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+        effort_level: value
+            .get("effort_level")
+            .and_then(|v| v.as_str())
+            .map(ToOwned::to_owned),
+    }
+}
+
+pub fn resume_run_in_place(
+    run_id: i64,
+    app_data_dir: &Path,
+    event_callback: Option<RunEventCallback>,
+) -> RunManagerResult<()> {
+    // 1. Load the existing run from DB
+    let repo = StorageRepository::open_in_app_data_dir(app_data_dir)?;
+    let detail = repo
+        .get_run_detail(run_id)?
+        .ok_or_else(|| RunManagerError::PromptbookParse(format!("run {run_id} not found")))?;
+
+    // 2. Parse metadata to get promptbook_path, workspace_dir, agent, model, effort
+    let metadata = parse_run_metadata_json(detail.run.metadata_json.as_deref());
+    let promptbook_path = metadata.promptbook_path.ok_or_else(|| {
+        RunManagerError::PromptbookParse("run has no promptbook_path in metadata".to_string())
+    })?;
+    let workspace_dir = metadata.workspace_dir.unwrap_or_else(|| ".".to_string());
+    let agent = detail.run.agent_default.clone();
+    let model = metadata.model.clone();
+    let effort_level = metadata.effort_level.clone();
+
+    // 3. Load promptbook
+    let promptbook = load_promptbook(Path::new(&promptbook_path))?;
+
+    // 4. Find the first non-success step (the resume point)
+    let succeeded_ids: std::collections::HashSet<String> = detail
+        .steps
+        .iter()
+        .filter(|s| s.status == "success")
+        .map(|s| s.step_id.clone())
+        .collect();
+
+    let from_step_id = promptbook
+        .steps
+        .iter()
+        .find(|s| !succeeded_ids.contains(&s.id))
+        .map(|s| s.id.clone());
+
+    // 5. Update run status to "running" in DB
+    let repo2 = StorageRepository::open_in_app_data_dir(app_data_dir)?;
+    repo2.update_run_status(run_id, "running", None)?;
+
+    // 6. Reset non-success steps to "pending" so they show correctly
+    for step in &promptbook.steps {
+        if !succeeded_ids.contains(&step.id) {
+            let _ = repo2.update_step_status(run_id, &step.id, "pending", None);
+        }
+    }
+
+    // 7. Register run handle with existing run_id
+    register_run_handle(run_id)?;
+
+    let app_data_dir_owned = app_data_dir.to_path_buf();
+    let workspace_path = Path::new(&workspace_dir).to_path_buf();
+    let from_step_id_clone = from_step_id.clone();
+    let promptbook_clone = promptbook.clone();
+    let model_clone = model.clone();
+    let effort_clone = effort_level.clone();
+
+    let join_handle = run_runtime().spawn_blocking(move || {
+        let result = (|| -> RunManagerResult<()> {
+            let _slot = acquire_parallel_run_slot(DEFAULT_MAX_PARALLEL_RUNS)?;
+            let repo = StorageRepository::open_in_app_data_dir(&app_data_dir_owned)?;
+
+            let default_agent = agent.as_deref().unwrap_or("codex").to_string();
+            let adapter_options = AdapterOptions {
+                model: model_clone,
+                effort_level: effort_clone,
+                ..AdapterOptions::default()
+            };
+
+            let run_status = execute_steps_from(
+                &repo,
+                run_id,
+                &promptbook_clone,
+                &default_agent,
+                &workspace_path,
+                &app_data_dir_owned,
+                from_step_id_clone.as_deref(),
+                adapter_options,
+                event_callback.as_ref(),
+            )?;
+
+            let finished_at = now_timestamp();
+            repo.update_run_status(run_id, &run_status, Some(&finished_at))?;
+            emit_run_event(
+                event_callback.as_ref(),
+                RunEvent::RunFinished { run_id, status: run_status, ts: finished_at },
+            );
+            unregister_run_handle(run_id)?;
+            Ok(())
+        })();
+
+        if let Err(_err) = result {
+            let _ = unregister_run_handle(run_id);
+            if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir_owned) {
+                let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+            }
+        }
+    });
+    set_run_task(run_id, join_handle)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -832,7 +1004,10 @@ mod tests {
 
     use crate::StorageRepository;
 
-    use super::{cancel_run, run_promptbook, start_run_background, start_run_background_from, RunManagerError};
+    use super::{
+        cancel_run, resume_run_in_place, run_promptbook, start_run_background,
+        start_run_background_from, RunManagerError,
+    };
 
     fn run_manager_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1212,6 +1387,50 @@ steps:
         assert_eq!(detail.steps[1].status, "success");
         assert_eq!(detail.steps[2].step_id, "step-3");
         assert_eq!(detail.steps[2].status, "success");
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn resume_run_in_place_continues_from_failed_step_without_new_run() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("resume-in-place");
+        let promptbook_path = write_two_step_fixture(&workspace_dir);
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
+
+        // Start a run that will succeed both steps
+        let run_id = run_promptbook(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+        )
+        .expect("first run");
+
+        // Manually set step-1 to failure to simulate a stopped run
+        let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).unwrap();
+        repo.update_step_status(run_id, "step-1", "failure", None).unwrap();
+        repo.update_run_status(run_id, "failure", None).unwrap();
+        drop(repo);
+
+        // Resume in place — should reuse the same run_id
+        resume_run_in_place(run_id, &app_data_dir, None).expect("resume in place");
+
+        // Wait for completion
+        wait_for_run_completion(&app_data_dir, run_id);
+
+        let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).unwrap();
+        let runs = repo.list_runs().unwrap();
+        // Should still be only ONE run (not two)
+        assert_eq!(
+            runs.iter().filter(|r| r.id == run_id).count(),
+            1,
+            "resume should not create a new run"
+        );
+
+        let detail = repo.get_run_detail(run_id).unwrap().unwrap();
+        assert_eq!(detail.run.status, "success", "run should be success after resume");
 
         let _ = fs::remove_dir_all(workspace_dir);
     }

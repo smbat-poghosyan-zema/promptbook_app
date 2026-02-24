@@ -17,8 +17,8 @@ pub mod ipc;
 pub mod run_manager;
 
 pub use run_manager::{
-    cancel_run, run_promptbook, start_run_background, start_run_background_from, RunEvent,
-    RunEventCallback, RunManagerError, RunManagerResult,
+    cancel_run, resume_run_in_place, run_promptbook, start_run_background,
+    start_run_background_from, RunEvent, RunEventCallback, RunManagerError, RunManagerResult,
 };
 
 pub type StorageResult<T> = Result<T, StorageError>;

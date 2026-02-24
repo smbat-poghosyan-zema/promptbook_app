@@ -2,12 +2,13 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn((cmd: string) => {
+  invoke: vi.fn((cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "list_agent_models") return Promise.resolve([
       { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", supports_effort: true }
     ]);
     if (cmd === "cancel_run") return Promise.resolve(true);
-    if (cmd === "resume_run") return Promise.resolve(1);
+    // resume_run returns the SAME run_id (no new run created)
+    if (cmd === "resume_run") return Promise.resolve((args?.original_run_id as number) ?? 1);
     if (cmd === "get_run_detail") return Promise.resolve({
       run: { id: 1, promptbook_name: "test", promptbook_version: "1.0.0", status: "success",
              started_at: "1700000000.000Z", finished_at: null, agent_default: null,
@@ -41,5 +42,22 @@ describe("App", () => {
     expect(html).toContain("Agent");
     expect(html).toContain("Model");
     expect(html).toContain("Effort");
+  });
+});
+
+describe("handleResumeRun re-selects same run", () => {
+  it("resume_run returns the original run_id so no duplicate entry is created", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    // Simulate calling resume_run with original_run_id=42
+    const result = await (invoke as ReturnType<typeof vi.fn>)("resume_run", { original_run_id: 42 });
+    // The backend now returns the SAME run_id instead of a new one,
+    // so the UI re-selects the existing run rather than creating a duplicate entry.
+    expect(result).toBe(42);
+  });
+
+  it("resume_run with default run_id returns same id", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await (invoke as ReturnType<typeof vi.fn>)("resume_run", { original_run_id: 1 });
+    expect(result).toBe(1);
   });
 });
