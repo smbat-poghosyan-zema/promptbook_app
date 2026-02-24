@@ -162,6 +162,7 @@ select {
   display: grid;
   grid-template-rows: auto auto auto 1fr;
   min-height: 0;
+  overflow: hidden;
 }
 
 .step-list {
@@ -429,36 +430,43 @@ select {
   gap: 0.75rem;
   padding: 0 1rem 1rem;
   min-height: 0;
+  overflow: hidden;
 }
 
 .pane {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 0.75rem;
-  min-height: 220px;
-  display: grid;
-  align-content: start;
-  gap: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  height: 320px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .pane h3 {
   font-size: 1rem;
+  flex-shrink: 0;
 }
 
 .pane pre {
   margin: 0;
+  flex: 1;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   background: #f8fafc;
   padding: 0.6rem;
-  overflow: auto;
+  overflow-y: auto;
   white-space: pre-wrap;
   line-height: 1.35;
+  min-height: 0;
 }
 
 .pane label {
   display: grid;
   gap: 0.35rem;
+  flex-shrink: 0;
 }
 
 .pane select {
