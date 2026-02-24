@@ -429,49 +429,52 @@ export function App() {
               </div>
             </label>
 
-            <label>
-              Agent
-              <select
-                value={dashboard.agent}
-                onChange={(event) => updateDashboardField("agent", event.target.value)}
-              >
-                {AGENT_OPTIONS.map((agent) => (
-                  <option key={agent} value={agent}>
-                    {agent}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="agent-model-effort-row">
+              {/* Agent */}
+              <label className="ame-field">
+                Agent
+                <select
+                  value={dashboard.agent}
+                  onChange={(event) => updateDashboardField("agent", event.target.value)}
+                >
+                  {AGENT_OPTIONS.map((agent) => (
+                    <option key={agent} value={agent}>{agent}</option>
+                  ))}
+                </select>
+              </label>
 
-            {availableModels.length > 0 && (
-              <label>
+              {/* Model — always reserve space even if empty, to avoid layout jump */}
+              <label className="ame-field">
                 Model
                 <select
                   value={dashboard.model}
                   onChange={(event) => updateDashboardField("model", event.target.value)}
+                  disabled={availableModels.length === 0}
                 >
-                  {availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name}
-                    </option>
-                  ))}
+                  {availableModels.length === 0 ? (
+                    <option value="">— no models —</option>
+                  ) : (
+                    availableModels.map((model) => (
+                      <option key={model.id} value={model.id}>{model.name}</option>
+                    ))
+                  )}
                 </select>
               </label>
-            )}
 
-            {supportsEffort && (
-              <label>
-                Effort level
+              {/* Effort — always render, disable when not supported */}
+              <label className="ame-field">
+                Effort
                 <select
                   value={dashboard.effortLevel}
                   onChange={(event) => updateDashboardField("effortLevel", event.target.value)}
+                  disabled={!supportsEffort}
                 >
                   <option value="low">Low</option>
                   <option value="medium">Medium</option>
                   <option value="high">High</option>
                 </select>
               </label>
-            )}
+            </div>
 
             <label>
               Workspace directory

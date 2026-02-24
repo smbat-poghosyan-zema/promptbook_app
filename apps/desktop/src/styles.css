@@ -437,6 +437,40 @@ select {
   padding: 0.25rem 0.5rem;
 }
 
+/* Agent / Model / Effort — horizontal row */
+.agent-model-effort-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.ame-field {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.ame-field select {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+}
+
+.ame-field select:disabled {
+  opacity: 0.5;
+  background: #f1f5f9;
+  cursor: not-allowed;
+}
+
+@media (max-width: 800px) {
+  .agent-model-effort-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;

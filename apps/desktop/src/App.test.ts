@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string) => {
-    if (cmd === "list_agent_models") return Promise.resolve([]);
+    if (cmd === "list_agent_models") return Promise.resolve([
+      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", supports_effort: true }
+    ]);
     if (cmd === "cancel_run") return Promise.resolve(true);
     if (cmd === "resume_run") return Promise.resolve(1);
     return Promise.resolve(null);
@@ -24,5 +26,9 @@ describe("App", () => {
     expect(html).toContain("Runs");
     expect(html).toContain("Run Detail");
     expect(html).toContain("Loading runs...");
+    expect(html).toContain("agent-model-effort-row");
+    expect(html).toContain("Agent");
+    expect(html).toContain("Model");
+    expect(html).toContain("Effort");
   });
 });
