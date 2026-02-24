@@ -561,8 +561,13 @@ export function App() {
                           type="button"
                           className="step-row-select"
                           onClick={() => {
-                            setActiveStepId(step.stepId);
-                            if (step.isExpandable) toggleStepExpanded(step.stepId);
+                            if (!step.isActive) {
+                              // First click: only activate, do not expand
+                              setActiveStepId(step.stepId);
+                            } else if (step.isExpandable) {
+                              // Already active: toggle expand
+                              toggleStepExpanded(step.stepId);
+                            }
                           }}
                           aria-expanded={expandedStepIds.has(step.stepId)}
                           aria-label={`Step ${step.stepNumber}: ${step.title}`}

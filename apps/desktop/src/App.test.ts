@@ -1,5 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRunDetailViewModel, type IpcRunDetail } from "./ui-model";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string, args?: Record<string, unknown>) => {
@@ -42,6 +43,79 @@ describe("App", () => {
     expect(html).toContain("Agent");
     expect(html).toContain("Model");
     expect(html).toContain("Effort");
+  });
+});
+
+// Shared run detail fixture with one expandable step (has a prompt)
+function buildSingleStepDetail(): IpcRunDetail {
+  return {
+    run: {
+      id: 1, promptbook_name: "test", promptbook_version: "1.0.0", status: "success",
+      started_at: "1700000000.000Z", finished_at: null, agent_default: null,
+      metadata_json: null, model: null, effort_level: null, workspace_dir: null,
+      step_count: 1, current_step_title: null
+    },
+    steps: [{ id: 1, run_id: 1, step_id: "s1", title: "Step 1",
+               status: "success", started_at: null, finished_at: null,
+               prompt: "Do the thing" }],
+    logs: [],
+    outputs: []
+  };
+}
+
+// Simulate the step-row-select onClick logic from App.tsx
+function simulateStepClick(
+  stepId: string,
+  isActive: boolean,
+  isExpandable: boolean,
+  currentActiveId: string | null,
+  currentExpanded: Set<string>
+): { activeStepId: string | null; expandedStepIds: Set<string> } {
+  const nextExpanded = new Set(currentExpanded);
+  let nextActiveId = currentActiveId;
+  if (!isActive) {
+    nextActiveId = stepId;
+  } else if (isExpandable) {
+    if (nextExpanded.has(stepId)) {
+      nextExpanded.delete(stepId);
+    } else {
+      nextExpanded.add(stepId);
+    }
+  }
+  return { activeStepId: nextActiveId, expandedStepIds: nextExpanded };
+}
+
+describe("step click: activate-then-expand behaviour", () => {
+  it("first click on inactive step activates but does NOT expand", () => {
+    const detail = buildSingleStepDetail();
+    // activeStepId=null → step is not active
+    const vm = createRunDetailViewModel(detail, null);
+    const step = vm.stepRows[0]!;
+    expect(step.isActive).toBe(false);
+    expect(step.isExpandable).toBe(true);
+
+    const { activeStepId, expandedStepIds } = simulateStepClick(
+      step.stepId, step.isActive, step.isExpandable, null, new Set()
+    );
+
+    expect(activeStepId).toBe("s1");
+    expect(expandedStepIds.has("s1")).toBe(false); // not expanded after first click
+  });
+
+  it("second click on already-active expandable step toggles expansion", () => {
+    const detail = buildSingleStepDetail();
+    // activeStepId="s1" → step is active
+    const vm = createRunDetailViewModel(detail, "s1");
+    const step = vm.stepRows[0]!;
+    expect(step.isActive).toBe(true);
+    expect(step.isExpandable).toBe(true);
+
+    const { activeStepId, expandedStepIds } = simulateStepClick(
+      step.stepId, step.isActive, step.isExpandable, "s1", new Set()
+    );
+
+    expect(activeStepId).toBe("s1");
+    expect(expandedStepIds.has("s1")).toBe(true); // expanded after second click
   });
 });
 

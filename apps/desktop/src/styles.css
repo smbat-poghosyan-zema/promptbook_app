@@ -198,23 +198,30 @@ select {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2.2rem;
+  width: 2.4rem;       /* slightly wider for breathing room */
   border-right: 1px solid #e2e8f0;
+  align-self: stretch; /* fill full row height */
 }
 
 .player-btn {
-  display: flex;
+  display: inline-flex;        /* works for both <button> and <span> */
   align-items: center;
   justify-content: center;
-  width: 1.6rem;
-  height: 1.6rem;
+  width: 1.8rem;
+  height: 1.8rem;
   border-radius: 50%;
   border: 1px solid #cbd5e1;
   background: #fff;
   cursor: pointer;
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   line-height: 1;
   padding: 0;
+  /* Remove any inherited text-align / vertical-align issues */
+  text-align: center;
+  vertical-align: middle;
+  flex-shrink: 0;
+  /* Nudge text slightly for optical centering */
+  padding-top: 0.05em;
 }
 
 .player-btn.stop-btn {
@@ -223,9 +230,7 @@ select {
   background: #fef2f2;
 }
 
-.player-btn.stop-btn:hover {
-  background: #fee2e2;
-}
+.player-btn.stop-btn:hover { background: #fee2e2; }
 
 .player-btn.resume-btn {
   border-color: #2563eb;
@@ -233,9 +238,7 @@ select {
   background: #eff6ff;
 }
 
-.player-btn.resume-btn:hover:not(:disabled) {
-  background: #dbeafe;
-}
+.player-btn.resume-btn:hover:not(:disabled) { background: #dbeafe; }
 
 .player-btn.resume-btn:disabled {
   opacity: 0.4;
@@ -247,6 +250,8 @@ select {
   color: #16a34a;
   background: #f0fdf4;
   cursor: default;
+  /* ✓ looks better slightly larger */
+  font-size: 0.75rem;
 }
 
 .player-btn.pending-indicator {
