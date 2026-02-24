@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -129,7 +129,7 @@ impl RunEventEmitter for TauriRunEventEmitter {
 
 #[derive(Clone)]
 pub struct IpcState {
-    app_data_dir: Arc<Mutex<Option<PathBuf>>>,
+    app_data_dir: PathBuf,
     event_emitter: Arc<dyn RunEventEmitter>,
 }
 
@@ -140,32 +140,20 @@ impl IpcState {
 
     pub fn with_emitter(event_emitter: Arc<dyn RunEventEmitter>) -> Self {
         Self {
-            app_data_dir: Arc::new(Mutex::new(None)),
+            app_data_dir: Path::new(".").join(".promptbook_runs"),
             event_emitter,
         }
     }
 
     pub fn with_emitter_and_data_dir(event_emitter: Arc<dyn RunEventEmitter>, app_data_dir: &Path) -> Self {
         Self {
-            app_data_dir: Arc::new(Mutex::new(Some(app_data_dir.to_path_buf()))),
+            app_data_dir: app_data_dir.to_path_buf(),
             event_emitter,
         }
     }
 
     fn resolve_app_data_dir(&self) -> PathBuf {
-        let guard = self.app_data_dir.lock();
-        if let Ok(state) = guard {
-            if let Some(path) = state.clone() {
-                return path;
-            }
-        }
-        Path::new(".").join(".promptbook_runs")
-    }
-
-    fn set_workspace_dir(&self, workspace_dir: &str) {
-        if let Ok(mut state) = self.app_data_dir.lock() {
-            *state = Some(Path::new(workspace_dir).join(".promptbook_runs"));
-        }
+        self.app_data_dir.clone()
     }
 }
 
@@ -380,7 +368,7 @@ pub fn start_run(
     effort_level: Option<String>,
     workspace_dir: String,
 ) -> IpcResult<i64> {
-    state.set_workspace_dir(&workspace_dir);
+    let app_data_dir = state.resolve_app_data_dir();
     let emitter = Arc::clone(&state.event_emitter);
     let callback = Arc::new(move |event: RunEvent| {
         let _ = emitter.emit_run_event(map_run_event(event));
@@ -391,6 +379,7 @@ pub fn start_run(
         &workspace_dir,
         model.as_deref(),
         effort_level.as_deref(),
+        &app_data_dir,
         Some(callback),
     )
     .map_err(|err| err.to_string())

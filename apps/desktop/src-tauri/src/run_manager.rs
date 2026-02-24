@@ -183,8 +183,9 @@ pub fn run_promptbook(
     workspace_dir: &str,
     model: Option<&str>,
     effort_level: Option<&str>,
+    app_data_dir: &Path,
 ) -> RunManagerResult<i64> {
-    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level, app_data_dir)?;
     let run_id = prepared.run_id;
     register_run_handle(run_id)?;
     if let Err(err) = execute_prepared_run_with_limits(prepared, None) {
@@ -200,9 +201,10 @@ pub fn start_run_background(
     workspace_dir: &str,
     model: Option<&str>,
     effort_level: Option<&str>,
+    app_data_dir: &Path,
     event_callback: Option<RunEventCallback>,
 ) -> RunManagerResult<i64> {
-    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level, app_data_dir)?;
     let run_id = prepared.run_id;
     register_run_handle(run_id)?;
     let app_data_dir = prepared.app_data_dir.clone();
@@ -226,9 +228,10 @@ pub fn start_run_background_from(
     model: Option<&str>,
     effort_level: Option<&str>,
     from_step_id: Option<&str>,
+    app_data_dir: &Path,
     event_callback: Option<RunEventCallback>,
 ) -> RunManagerResult<i64> {
-    let mut prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
+    let mut prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level, app_data_dir)?;
     prepared.from_step_id = from_step_id.map(ToOwned::to_owned);
     let run_id = prepared.run_id;
     register_run_handle(run_id)?;
@@ -251,11 +254,11 @@ fn prepare_run(
     workspace_dir: &str,
     model: Option<&str>,
     effort_level: Option<&str>,
+    app_data_dir: &Path,
 ) -> RunManagerResult<PreparedRun> {
     let promptbook = load_promptbook(Path::new(promptbook_path))?;
     let workspace_path = Path::new(workspace_dir);
-    let app_data_dir = workspace_path.join(".promptbook_runs");
-    fs::create_dir_all(&app_data_dir)?;
+    fs::create_dir_all(app_data_dir)?;
     let repo = StorageRepository::open_in_app_data_dir(&app_data_dir)?;
     let max_parallel_runs = read_max_parallel_runs(&repo);
 
@@ -298,7 +301,7 @@ fn prepare_run(
         selected_model: model.map(ToOwned::to_owned),
         selected_effort: effort_level.map(ToOwned::to_owned),
         workspace_path: workspace_path.to_path_buf(),
-        app_data_dir,
+        app_data_dir: app_data_dir.to_path_buf(),
         max_parallel_runs,
         from_step_id: None,
     })
@@ -1100,16 +1103,16 @@ steps:
         let workspace_dir = temp_workspace_dir("run-manager-dry-run");
         let promptbook_path = write_two_step_fixture(&workspace_dir);
 
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
         let run_id = run_promptbook(
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &app_data_dir,
         )
         .expect("run promptbook");
-
-        let app_data_dir = workspace_dir.join(".promptbook_runs");
         let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
         let detail = repo
             .get_run_detail(run_id)
@@ -1150,12 +1153,14 @@ steps:
         let workspace_dir = temp_workspace_dir("run-manager-dry-run-parallel");
         let promptbook_path = write_two_step_fixture(&workspace_dir);
 
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
         let run_id_one = start_run_background(
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &app_data_dir,
             None,
         )
         .expect("start first run");
@@ -1165,12 +1170,11 @@ steps:
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &app_data_dir,
             None,
         )
         .expect("start second run");
         assert_ne!(run_id_one, run_id_two);
-
-        let app_data_dir = workspace_dir.join(".promptbook_runs");
         wait_for_run_completion(&app_data_dir, run_id_one);
         wait_for_run_completion(&app_data_dir, run_id_two);
 
@@ -1220,6 +1224,7 @@ steps: []
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &workspace_dir.join(".promptbook_runs"),
         );
 
         match result {
@@ -1248,6 +1253,7 @@ steps: []
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &workspace_dir.join(".promptbook_runs"),
         );
 
         assert!(
@@ -1270,6 +1276,7 @@ steps: []
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &workspace_dir.join(".promptbook_runs"),
         );
 
         match result {
@@ -1288,20 +1295,20 @@ steps: []
         let workspace_dir = temp_workspace_dir("run-manager-cancel");
         let promptbook_path = write_large_fixture(&workspace_dir, 120);
 
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
         let run_id = start_run_background(
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &app_data_dir,
             None,
         )
         .expect("start run");
 
         let cancel_result = cancel_run(run_id).expect("cancel run");
         assert!(cancel_result, "run should be cancellable while active");
-
-        let app_data_dir = workspace_dir.join(".promptbook_runs");
         wait_for_run_completion(&app_data_dir, run_id);
 
         let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
@@ -1359,6 +1366,7 @@ steps:
         let workspace_dir = temp_workspace_dir("run-manager-resume");
         let promptbook_path = write_three_step_fixture(&workspace_dir);
 
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
         let run_id = start_run_background_from(
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
@@ -1366,11 +1374,10 @@ steps:
             None,
             None,
             Some("step-2"),
+            &app_data_dir,
             None,
         )
         .expect("start run from step-2");
-
-        let app_data_dir = workspace_dir.join(".promptbook_runs");
         wait_for_run_completion(&app_data_dir, run_id);
 
         let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
@@ -1405,6 +1412,7 @@ steps:
             &workspace_dir.to_string_lossy(),
             None,
             None,
+            &app_data_dir,
         )
         .expect("first run");
 
