@@ -142,6 +142,22 @@ select {
   color: #0f172a;
 }
 
+.secondary-action {
+  background: #f8fafc;
+  color: #0f172a;
+}
+
+.danger-action {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.run-detail-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .run-detail {
   display: grid;
   grid-template-rows: auto auto auto 1fr;

@@ -170,6 +170,7 @@ struct PreparedRun {
     workspace_path: PathBuf,
     app_data_dir: PathBuf,
     max_parallel_runs: usize,
+    from_step_id: Option<String>,
 }
 
 static RUN_HANDLES: OnceLock<Mutex<HashMap<i64, RunHandle>>> = OnceLock::new();
@@ -218,6 +219,32 @@ pub fn start_run_background(
     Ok(run_id)
 }
 
+pub fn start_run_background_from(
+    promptbook_path: &str,
+    agent: Option<&str>,
+    workspace_dir: &str,
+    model: Option<&str>,
+    effort_level: Option<&str>,
+    from_step_id: Option<&str>,
+    event_callback: Option<RunEventCallback>,
+) -> RunManagerResult<i64> {
+    let mut prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
+    prepared.from_step_id = from_step_id.map(ToOwned::to_owned);
+    let run_id = prepared.run_id;
+    register_run_handle(run_id)?;
+    let app_data_dir = prepared.app_data_dir.clone();
+    let join_handle = run_runtime().spawn_blocking(move || {
+        if execute_prepared_run_with_limits(prepared, event_callback).is_err() {
+            let _ = unregister_run_handle(run_id);
+            if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir) {
+                let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+            }
+        }
+    });
+    set_run_task(run_id, join_handle)?;
+    Ok(run_id)
+}
+
 fn prepare_run(
     promptbook_path: &str,
     agent: Option<&str>,
@@ -260,6 +287,7 @@ fn prepare_run(
         workspace_path: workspace_path.to_path_buf(),
         app_data_dir,
         max_parallel_runs,
+        from_step_id: None,
     })
 }
 
@@ -276,6 +304,7 @@ fn execute_prepared_run(
     event_callback: Option<RunEventCallback>,
 ) -> RunManagerResult<()> {
     let run_id = prepared.run_id;
+    let from_step_id = prepared.from_step_id.clone();
     let repo = match StorageRepository::open_in_app_data_dir(&prepared.app_data_dir) {
         Ok(repo) => repo,
         Err(err) => {
@@ -292,6 +321,7 @@ fn execute_prepared_run(
         prepared.selected_effort.as_deref(),
         &prepared.workspace_path,
         &prepared.app_data_dir,
+        from_step_id.as_deref(),
         event_callback.as_ref(),
     );
 
@@ -352,6 +382,7 @@ fn execute_steps(
     selected_effort: Option<&str>,
     workspace_path: &Path,
     app_data_dir: &Path,
+    from_step_id: Option<&str>,
     event_callback: Option<&RunEventCallback>,
 ) -> RunManagerResult<String> {
     let default_agent = selected_agent
@@ -364,7 +395,16 @@ fn execute_steps(
         .unwrap_or(false);
     let mut run_status = "success".to_string();
 
-    for step in &promptbook.steps {
+    let start_idx = match from_step_id {
+        None => 0,
+        Some(step_id) => promptbook
+            .steps
+            .iter()
+            .position(|s| s.id == step_id)
+            .unwrap_or(0),
+    };
+
+    for step in &promptbook.steps[start_idx..] {
         if is_run_cancelled(run_id)? {
             run_status = "failure".to_string();
             break;
@@ -784,7 +824,7 @@ mod tests {
 
     use crate::StorageRepository;
 
-    use super::{cancel_run, run_promptbook, start_run_background, RunManagerError};
+    use super::{cancel_run, run_promptbook, start_run_background, start_run_background_from, RunManagerError};
 
     fn run_manager_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -1092,6 +1132,73 @@ steps: []
             "expected cancellation before all steps complete, got {} steps",
             detail.steps.len()
         );
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    fn write_three_step_fixture(path: &Path) -> PathBuf {
+        let promptbook_path = path.join("three-step-dry-run.v1.yaml");
+        let promptbook_yaml = r#"
+schema_version: "promptbook/v1"
+name: "dry-run-three-step"
+version: "1.0.0"
+description: "Fixture for resume test"
+steps:
+  - id: "step-1"
+    title: "First step"
+    prompt: |
+      Run first step
+    verify:
+      - "echo ok"
+  - id: "step-2"
+    title: "Second step"
+    prompt: |
+      Run second step
+    verify:
+      - "echo ok"
+  - id: "step-3"
+    title: "Third step"
+    prompt: |
+      Run third step
+    verify:
+      - "echo ok"
+"#;
+        fs::write(&promptbook_path, promptbook_yaml.trim_start())
+            .expect("write promptbook fixture");
+        promptbook_path
+    }
+
+    #[test]
+    fn resume_run_from_step_skips_earlier_steps() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("run-manager-resume");
+        let promptbook_path = write_three_step_fixture(&workspace_dir);
+
+        let run_id = start_run_background_from(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+            Some("step-2"),
+            None,
+        )
+        .expect("start run from step-2");
+
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
+        wait_for_run_completion(&app_data_dir, run_id);
+
+        let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
+        let detail = repo
+            .get_run_detail(run_id)
+            .expect("get run detail")
+            .expect("run detail exists");
+
+        assert_eq!(detail.run.status, "success");
+        assert_eq!(detail.steps.len(), 2, "expected only step-2 and step-3, skipping step-1");
+        assert!(detail.steps.iter().all(|s| s.status == "success"));
+        assert_eq!(detail.steps[0].step_id, "step-2");
+        assert_eq!(detail.steps[1].step_id, "step-3");
 
         let _ = fs::remove_dir_all(workspace_dir);
     }

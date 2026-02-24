@@ -4,6 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string) => {
     if (cmd === "list_agent_models") return Promise.resolve([]);
+    if (cmd === "cancel_run") return Promise.resolve(true);
+    if (cmd === "resume_run") return Promise.resolve(1);
     return Promise.resolve(null);
   })
 }));

@@ -6,8 +6,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    cancel_run as cancel_run_sync, start_run_background, LogRecord, OutputRecord, RunDetail,
-    RunEvent, RunRecord, StepRecord, StorageRepository,
+    cancel_run as cancel_run_sync, start_run_background, start_run_background_from, LogRecord,
+    OutputRecord, RunDetail, RunEvent, RunRecord, StepRecord, StorageRepository,
 };
 
 pub type IpcResult<T> = Result<T, String>;
@@ -178,11 +178,12 @@ struct RunMetadata {
     model: Option<String>,
     effort_level: Option<String>,
     workspace_dir: Option<String>,
+    promptbook_path: Option<String>,
 }
 
 impl Default for RunMetadata {
     fn default() -> Self {
-        Self { model: None, effort_level: None, workspace_dir: None }
+        Self { model: None, effort_level: None, workspace_dir: None, promptbook_path: None }
     }
 }
 
@@ -195,6 +196,7 @@ fn parse_run_metadata(metadata: Option<&str>) -> RunMetadata {
         model: value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned),
         effort_level: value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned),
         workspace_dir: value.get("workspace_dir").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+        promptbook_path: value.get("promptbook_path").and_then(|v| v.as_str()).map(ToOwned::to_owned),
     }
 }
 
@@ -329,6 +331,50 @@ pub fn start_run(
 #[tauri::command]
 pub fn cancel_run(run_id: i64) -> IpcResult<bool> {
     cancel_run_sync(run_id).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn resume_run(
+    state: tauri::State<'_, IpcState>,
+    original_run_id: i64,
+) -> IpcResult<i64> {
+    let repo = StorageRepository::open_in_app_data_dir(&state.resolve_app_data_dir())
+        .map_err(|err| err.to_string())?;
+    let detail = repo
+        .get_run_detail(original_run_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| format!("run {original_run_id} not found"))?;
+
+    let metadata = parse_run_metadata(detail.run.metadata_json.as_deref());
+    let promptbook_path = metadata
+        .promptbook_path
+        .ok_or_else(|| "original run has no promptbook_path in metadata".to_string())?;
+    let workspace_dir = metadata.workspace_dir.unwrap_or_else(|| ".".to_string());
+    let agent = detail.run.agent_default.clone();
+    let model = metadata.model.clone();
+    let effort_level = metadata.effort_level.clone();
+
+    let resume_from_step = detail
+        .steps
+        .iter()
+        .find(|s| s.status != "success")
+        .map(|s| s.step_id.clone());
+
+    let emitter = Arc::clone(&state.event_emitter);
+    let callback = Arc::new(move |event: RunEvent| {
+        let _ = emitter.emit_run_event(map_run_event(event));
+    });
+
+    start_run_background_from(
+        &promptbook_path,
+        agent.as_deref(),
+        &workspace_dir,
+        model.as_deref(),
+        effort_level.as_deref(),
+        resume_from_step.as_deref(),
+        Some(callback),
+    )
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

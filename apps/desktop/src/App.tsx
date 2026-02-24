@@ -263,6 +263,27 @@ export function App() {
     setDashboard((current) => ({ ...current, promptbookPath: selected.path }));
   }
 
+  async function handleStopRun(): Promise<void> {
+    if (selectedRunId === null) return;
+    try {
+      await invoke("cancel_run", { runId: selectedRunId });
+      await loadRuns();
+    } catch (error) {
+      pushErrorToast(`Failed to stop run: ${getErrorMessage(error)}`);
+    }
+  }
+
+  async function handleResumeRun(): Promise<void> {
+    if (selectedRunId === null) return;
+    try {
+      const newRunId = await invoke<number>("resume_run", { originalRunId: selectedRunId });
+      await loadRuns();
+      setSelectedRunId(newRunId);
+    } catch (error) {
+      pushErrorToast(`Failed to resume run: ${getErrorMessage(error)}`);
+    }
+  }
+
   async function handleStartRun(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
 
@@ -471,6 +492,26 @@ export function App() {
         <section className="panel run-detail">
           <header className="panel-header">
             <h2>Run Detail</h2>
+            <div className="run-detail-actions">
+              {runDetail && runDetail.run.status === "running" && (
+                <button
+                  type="button"
+                  className="danger-action"
+                  onClick={() => void handleStopRun()}
+                >
+                  Stop
+                </button>
+              )}
+              {runDetail && runDetail.run.status === "failure" && (
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => void handleResumeRun()}
+                >
+                  Resume from failed step
+                </button>
+              )}
+            </div>
           </header>
 
           {selectedRunId === null ? (

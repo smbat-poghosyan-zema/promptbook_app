@@ -154,6 +154,21 @@ describe("ui model", () => {
     expect(viewModel.stepRows[1]?.status).toBe("next");
   });
 
+  it("marks step at index 1 as 'next' when step at index 0 is running, via activeStepId=null", () => {
+    const detail: IpcRunDetail = {
+      ...buildRunDetail(),
+      steps: [
+        { id: 1, run_id: 11, step_id: "step-0", title: "Step zero", status: "running", started_at: null, finished_at: null },
+        { id: 2, run_id: 11, step_id: "step-1", title: "Step one", status: "pending", started_at: null, finished_at: null },
+        { id: 3, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+      ]
+    };
+    const viewModel = createRunDetailViewModel(detail, null);
+    expect(viewModel.stepRows[0]?.status).toBe("running");
+    expect(viewModel.stepRows[1]?.status).toBe("next");
+    expect(viewModel.stepRows[2]?.status).toBe("pending");
+  });
+
   it("shows liveLines only for the active step", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),
