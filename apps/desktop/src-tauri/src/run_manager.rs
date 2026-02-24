@@ -278,6 +278,19 @@ fn prepare_run(
         metadata_json,
     })?;
 
+    // Pre-create all steps as "pending" so they are visible immediately
+    for step in &promptbook.steps {
+        repo.create_step(&NewStep {
+            run_id,
+            step_id: step.id.clone(),
+            title: step.title.clone(),
+            status: "pending".to_string(),
+            started_at: None,
+            finished_at: None,
+            prompt: Some(step.prompt.clone()),
+        })?;
+    }
+
     Ok(PreparedRun {
         run_id,
         promptbook,
@@ -411,14 +424,9 @@ fn execute_steps(
         }
 
         let step_started_at = now_timestamp();
-        repo.create_step(&NewStep {
-            run_id,
-            step_id: step.id.clone(),
-            title: step.title.clone(),
-            status: "running".to_string(),
-            started_at: Some(step_started_at.clone()),
-            finished_at: None,
-        })?;
+        // The step record was pre-created in prepare_run; just update its status
+        repo.update_step_status(run_id, &step.id, "running", None)?;
+        repo.update_step_started_at(run_id, &step.id, &step_started_at)?;
         emit_run_event(
             event_callback,
             RunEvent::StepStarted {
@@ -936,6 +944,7 @@ steps:
         assert_eq!(detail.run.status, "success");
         assert_eq!(detail.steps.len(), 2);
         assert!(detail.steps.iter().all(|step| step.status == "success"));
+        assert!(detail.steps.iter().all(|s| s.prompt.is_some()), "all steps should have prompt");
         assert!(!detail.logs.is_empty(), "expected persisted logs");
         assert_eq!(detail.outputs.len(), 2);
         assert!(
@@ -1127,10 +1136,11 @@ steps: []
             .expect("run detail exists");
 
         assert_eq!(detail.run.status, "failure");
+        let executed_steps = detail.steps.iter().filter(|s| s.status != "pending").count();
         assert!(
-            detail.steps.len() < 120,
-            "expected cancellation before all steps complete, got {} steps",
-            detail.steps.len()
+            executed_steps < 120,
+            "expected cancellation before all steps execute, got {} executed steps",
+            executed_steps
         );
 
         let _ = fs::remove_dir_all(workspace_dir);
@@ -1195,10 +1205,13 @@ steps:
             .expect("run detail exists");
 
         assert_eq!(detail.run.status, "success");
-        assert_eq!(detail.steps.len(), 2, "expected only step-2 and step-3, skipping step-1");
-        assert!(detail.steps.iter().all(|s| s.status == "success"));
-        assert_eq!(detail.steps[0].step_id, "step-2");
-        assert_eq!(detail.steps[1].step_id, "step-3");
+        assert_eq!(detail.steps.len(), 3, "all three steps pre-created");
+        assert_eq!(detail.steps[0].step_id, "step-1");
+        assert_eq!(detail.steps[0].status, "pending", "step-1 was skipped so stays pending");
+        assert_eq!(detail.steps[1].step_id, "step-2");
+        assert_eq!(detail.steps[1].status, "success");
+        assert_eq!(detail.steps[2].step_id, "step-3");
+        assert_eq!(detail.steps[2].status, "success");
 
         let _ = fs::remove_dir_all(workspace_dir);
     }

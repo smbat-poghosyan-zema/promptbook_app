@@ -52,6 +52,7 @@ export function App() {
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [runDetail, setRunDetail] = useState<IpcRunDetail | null>(null);
   const [activeStepId, setActiveStepId] = useState<string | null>(null);
+  const [expandedStepIds, setExpandedStepIds] = useState<Set<string>>(new Set());
   const [splitPane, setSplitPane] = useState<SplitPane>("live");
   const [dashboard, setDashboard] = useState<DashboardForm>({
     promptbookPath: "",
@@ -261,6 +262,18 @@ export function App() {
     }
 
     setDashboard((current) => ({ ...current, promptbookPath: selected.path }));
+  }
+
+  function toggleStepExpanded(stepId: string): void {
+    setExpandedStepIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(stepId)) {
+        next.delete(stepId);
+      } else {
+        next.add(stepId);
+      }
+      return next;
+    });
   }
 
   async function handleStopRun(): Promise<void> {
@@ -511,42 +524,61 @@ export function App() {
                 ) : (
                   detailViewModel.stepRows.map((step) => (
                     <li key={step.stepId}
-                        className={`step-row ${step.isActive ? "is-active" : ""} ${step.status}`}>
+                        className={`step-row ${step.isActive ? "is-active" : ""} step-status-${step.status}`}>
 
-                      {/* Clickable area: selects this step's output pane */}
-                      <button
-                        type="button"
-                        className="step-row-select"
-                        onClick={() => setActiveStepId(step.stepId)}
-                        aria-label={`View step ${step.stepNumber}: ${step.title}`}
-                      >
-                        <span className="step-number-badge">STEP {step.stepNumber}</span>
-                        <span className="step-title">{step.title}</span>
-                        <span className="step-filler" aria-hidden="true" />
-                        <span className={`status-pill ${step.status}`}>{step.statusLabel}</span>
-                      </button>
+                      <div className="step-top-row">
+                        {/* ── Player button (left) ── */}
+                        <div className="step-player">
+                          {step.status === "running" ? (
+                            <button
+                              type="button"
+                              className="player-btn stop-btn"
+                              title="Stop this step"
+                              onClick={() => void handleStopRun()}
+                            >
+                              ■
+                            </button>
+                          ) : step.status === "failure" || step.status === "stopped" ? (
+                            <button
+                              type="button"
+                              className="player-btn resume-btn"
+                              title="Resume from this step"
+                              disabled={runDetail?.run.status === "running"}
+                              onClick={() => void handleResumeRun()}
+                            >
+                              ▶
+                            </button>
+                          ) : step.status === "success" ? (
+                            <span className="player-btn done-indicator" title="Completed">✓</span>
+                          ) : (
+                            /* pending / queued */
+                            <span className="player-btn pending-indicator" title="Queued">▶</span>
+                          )}
+                        </div>
 
-                      {/* Action buttons — only shown when relevant */}
-                      {step.status === "running" && (
+                        {/* ── Clickable header row: selects output pane ── */}
                         <button
                           type="button"
-                          className="step-action-btn danger-action"
-                          onClick={() => void handleStopRun()}
-                          title="Stop this step"
+                          className="step-row-select"
+                          onClick={() => {
+                            setActiveStepId(step.stepId);
+                            if (step.isExpandable) toggleStepExpanded(step.stepId);
+                          }}
+                          aria-expanded={expandedStepIds.has(step.stepId)}
+                          aria-label={`Step ${step.stepNumber}: ${step.title}`}
                         >
-                          Stop
+                          <span className="step-number-badge">STEP {step.stepNumber}</span>
+                          <span className="step-title">{step.title}</span>
+                          <span className="step-filler" aria-hidden="true" />
+                          <span className={`status-pill ${step.status}`}>{step.statusLabel}</span>
                         </button>
-                      )}
-                      {(step.status === "failure" || step.status === "stopped") &&
-                       runDetail?.run.status !== "running" && (
-                        <button
-                          type="button"
-                          className="step-action-btn secondary-action"
-                          onClick={() => void handleResumeRun()}
-                          title="Resume from this step"
-                        >
-                          Resume
-                        </button>
+                      </div>
+
+                      {/* ── Expanded prompt ── */}
+                      {expandedStepIds.has(step.stepId) && step.prompt && (
+                        <div className="step-prompt-expand">
+                          <pre className="step-prompt-text">{step.prompt}</pre>
+                        </div>
                       )}
                     </li>
                   ))

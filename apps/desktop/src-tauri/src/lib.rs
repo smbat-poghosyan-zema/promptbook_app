@@ -85,6 +85,7 @@ pub struct NewStep {
     pub status: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +97,7 @@ pub struct StepRecord {
     pub status: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +229,9 @@ impl StorageRepository {
             ",
         )?;
 
+        // Best-effort migration: add prompt column if missing
+        let _ = conn.execute_batch("ALTER TABLE steps ADD COLUMN prompt TEXT;");
+
         Ok(())
     }
 
@@ -283,8 +288,8 @@ impl StorageRepository {
         self.conn.execute(
             "
             INSERT INTO steps
-            (run_id, step_id, title, status, started_at, finished_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (run_id, step_id, title, status, started_at, finished_at, prompt)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ",
             params![
                 new_step.run_id,
@@ -292,7 +297,8 @@ impl StorageRepository {
                 &new_step.title,
                 &new_step.status,
                 &new_step.started_at,
-                &new_step.finished_at
+                &new_step.finished_at,
+                &new_step.prompt
             ],
         )?;
 
@@ -319,6 +325,22 @@ impl StorageRepository {
             params![status, finished_at, run_id, step_id],
         )?;
 
+        Ok(())
+    }
+
+    pub fn update_step_started_at(
+        &self,
+        run_id: i64,
+        step_id: &str,
+        started_at: &str,
+    ) -> StorageResult<()> {
+        let _guard = Self::write_lock()
+            .lock()
+            .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
+        self.conn.execute(
+            "UPDATE steps SET started_at = ?1 WHERE run_id = ?2 AND step_id = ?3",
+            rusqlite::params![started_at, run_id, step_id],
+        )?;
         Ok(())
     }
 
@@ -444,7 +466,7 @@ impl StorageRepository {
 
         let mut steps_stmt = self.conn.prepare(
             "
-            SELECT id, run_id, step_id, title, status, started_at, finished_at
+            SELECT id, run_id, step_id, title, status, started_at, finished_at, prompt
             FROM steps
             WHERE run_id = ?1
             ORDER BY id ASC
@@ -460,6 +482,7 @@ impl StorageRepository {
                     status: row.get(4)?,
                     started_at: row.get(5)?,
                     finished_at: row.get(6)?,
+                    prompt: row.get(7)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -623,6 +646,7 @@ mod tests {
                 status: "running".to_string(),
                 started_at: Some("2026-02-21T01:01:00Z".to_string()),
                 finished_at: None,
+                prompt: Some("Do the thing".to_string()),
             })
             .expect("create step");
 

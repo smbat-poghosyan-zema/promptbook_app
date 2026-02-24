@@ -46,6 +46,7 @@ pub struct IpcStepRecord {
     pub status: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -231,6 +232,7 @@ impl From<StepRecord> for IpcStepRecord {
             status: value.status,
             started_at: value.started_at,
             finished_at: value.finished_at,
+            prompt: value.prompt,
         }
     }
 }

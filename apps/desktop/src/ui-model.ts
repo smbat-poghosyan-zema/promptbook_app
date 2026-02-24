@@ -28,6 +28,7 @@ export type IpcStepRecord = {
   status: string;
   started_at: string | null;
   finished_at: string | null;
+  prompt: string | null;
 };
 
 export type IpcLogRecord = {
@@ -75,6 +76,7 @@ export function formatRunStatus(status: string): string {
     case "cancelled": return "stopped";
     case "success": return "success";
     case "failure": return "failure";
+    case "pending": return "queued";
     default: return status;
   }
 }
@@ -100,6 +102,8 @@ export type StepViewModel = {
   isActive: boolean;
   liveLines: string[];
   finalOutput: string | null;
+  prompt: string | null;
+  isExpandable: boolean;    // true if prompt is non-null
 };
 
 export type RunDetailViewModel = {
@@ -203,7 +207,9 @@ export function createRunDetailViewModel(
       stepNumber: idx + 1,
       isActive: step.step_id === activeStepId,
       liveLines: logs.map((l) => `[${l.stream}] ${l.line}`),
-      finalOutput: output?.content ?? null
+      finalOutput: output?.content ?? null,
+      prompt: step.prompt ?? null,
+      isExpandable: !!(step.prompt)
     };
   });
 
@@ -278,7 +284,8 @@ export function applyRunEvent(detail: IpcRunDetail, event: RunEventEnvelope): Ip
           title: readString(event.payload, "title") ?? stepId,
           status: "running",
           started_at: readString(event.payload, "ts"),
-          finished_at: null
+          finished_at: null,
+          prompt: null
         }
       ]
     };

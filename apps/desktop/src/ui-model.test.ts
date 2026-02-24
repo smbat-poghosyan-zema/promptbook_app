@@ -34,7 +34,8 @@ function buildRunDetail(): IpcRunDetail {
         title: "Step one",
         status: "queued",
         started_at: null,
-        finished_at: null
+        finished_at: null,
+        prompt: null
       }
     ],
     logs: [],
@@ -70,8 +71,11 @@ describe("formatRunStatus", () => {
     expect(formatRunStatus("success")).toBe("success");
     expect(formatRunStatus("failure")).toBe("failure");
   });
+  it("maps pending to queued", () => {
+    expect(formatRunStatus("pending")).toBe("queued");
+  });
   it("passes through unknown statuses", () => {
-    expect(formatRunStatus("pending")).toBe("pending");
+    expect(formatRunStatus("unknown-status")).toBe("unknown-status");
   });
 });
 
@@ -164,8 +168,8 @@ describe("ui model", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),
       steps: [
-        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null },
-        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null, prompt: null },
+        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null, prompt: null }
       ]
     };
     const viewModel = createRunDetailViewModel(detail, "step-1");
@@ -177,8 +181,8 @@ describe("ui model", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),
       steps: [
-        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null },
-        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null, prompt: null },
+        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null, prompt: null }
       ]
     };
     const viewModel = createRunDetailViewModel(detail, "step-1");
@@ -192,9 +196,9 @@ describe("ui model", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),
       steps: [
-        { id: 1, run_id: 11, step_id: "step-0", title: "Step zero", status: "running", started_at: null, finished_at: null },
-        { id: 2, run_id: 11, step_id: "step-1", title: "Step one", status: "pending", started_at: null, finished_at: null },
-        { id: 3, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+        { id: 1, run_id: 11, step_id: "step-0", title: "Step zero", status: "running", started_at: null, finished_at: null, prompt: null },
+        { id: 2, run_id: 11, step_id: "step-1", title: "Step one", status: "pending", started_at: null, finished_at: null, prompt: null },
+        { id: 3, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null, prompt: null }
       ]
     };
     const viewModel = createRunDetailViewModel(detail, null);
@@ -206,6 +210,9 @@ describe("ui model", () => {
   it("shows liveLines only for the active step", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),
+      steps: [
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null, prompt: null }
+      ],
       logs: [
         { id: 1, run_id: 11, step_id: "step-1", ts: "t1", stream: "stdout", line: "line from step-1" },
         { id: 2, run_id: 11, step_id: "step-2", ts: "t2", stream: "stderr", line: "line from step-2" }
@@ -259,6 +266,19 @@ describe("ui model", () => {
       payload: { title: "Step two", ts: "2026-02-21T00:00:04Z" }
     });
     expect(newStep.steps.some((step) => step.step_id === "step-2")).toBe(true);
+  });
+
+  it("step rows include stepNumber and prompt", () => {
+    const detail: IpcRunDetail = {
+      ...buildRunDetail(),
+      steps: [
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null, prompt: "Do the thing" }
+      ]
+    };
+    const vm = createRunDetailViewModel(detail, "step-1");
+    expect(vm.stepRows[0]?.stepNumber).toBe(1);
+    expect(vm.stepRows[0]?.prompt).toBe("Do the thing");
+    expect(vm.stepRows[0]?.isExpandable).toBe(true);
   });
 
   it("updates step and run status events only for matching run IDs", () => {
