@@ -23,6 +23,15 @@ pub struct IpcRunRecord {
     pub finished_at: Option<String>,
     pub agent_default: Option<String>,
     pub metadata_json: Option<String>,
+    pub model: Option<String>,
+    pub effort_level: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpcModelInfo {
+    pub id: String,
+    pub name: String,
+    pub supports_effort: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,8 +171,17 @@ impl Default for IpcState {
     }
 }
 
+fn parse_model_effort_from_metadata(metadata: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(json) = metadata else { return (None, None) };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else { return (None, None) };
+    let model = value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+    let effort = value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+    (model, effort)
+}
+
 impl From<RunRecord> for IpcRunRecord {
     fn from(value: RunRecord) -> Self {
+        let (model, effort_level) = parse_model_effort_from_metadata(value.metadata_json.as_deref());
         Self {
             id: value.id,
             promptbook_name: value.promptbook_name,
@@ -173,6 +191,8 @@ impl From<RunRecord> for IpcRunRecord {
             finished_at: value.finished_at,
             agent_default: value.agent_default,
             metadata_json: value.metadata_json,
+            model,
+            effort_level,
         }
     }
 }
@@ -251,10 +271,21 @@ pub fn get_run_detail(state: tauri::State<'_, IpcState>, run_id: i64) -> IpcResu
 }
 
 #[tauri::command]
+pub fn list_agent_models(agent: String) -> IpcResult<Vec<IpcModelInfo>> {
+    use crate::agent_adapter::{models_for_agent, ModelInfo};
+    Ok(models_for_agent(&agent)
+        .into_iter()
+        .map(|m: ModelInfo| IpcModelInfo { id: m.id, name: m.name, supports_effort: m.supports_effort })
+        .collect())
+}
+
+#[tauri::command]
 pub fn start_run(
     state: tauri::State<'_, IpcState>,
     promptbook_path: String,
     agent: Option<String>,
+    model: Option<String>,
+    effort_level: Option<String>,
     workspace_dir: String,
 ) -> IpcResult<i64> {
     state.set_workspace_dir(&workspace_dir);
@@ -262,8 +293,15 @@ pub fn start_run(
     let callback = Arc::new(move |event: RunEvent| {
         let _ = emitter.emit_run_event(map_run_event(event));
     });
-    start_run_background(&promptbook_path, agent.as_deref(), &workspace_dir, Some(callback))
-        .map_err(|err| err.to_string())
+    start_run_background(
+        &promptbook_path,
+        agent.as_deref(),
+        &workspace_dir,
+        model.as_deref(),
+        effort_level.as_deref(),
+        Some(callback),
+    )
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -424,7 +462,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        list_sample_promptbooks, resolve_sample_promptbooks_dir,
+        list_agent_models, list_sample_promptbooks, resolve_sample_promptbooks_dir,
         IpcRunDetail, IpcRunRecord, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
     };
     use serde_json::json;
@@ -507,6 +545,8 @@ mod tests {
                 finished_at: None,
                 agent_default: Some("codex".to_string()),
                 metadata_json: Some("{\"k\":\"v\"}".to_string()),
+                model: None,
+                effort_level: None,
             },
             steps: Vec::new(),
             logs: Vec::new(),
@@ -544,5 +584,17 @@ mod tests {
         assert!(samples.iter().all(|sample| sample.path.ends_with(".v1.yaml")));
 
         let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
+    fn list_agent_models_returns_claude_models() {
+        let result = list_agent_models("claude".to_string());
+        let models = result.expect("list claude models should succeed");
+        assert!(models.len() >= 2, "expected at least 2 claude models");
+        let supports_effort_count = models.iter().filter(|m| m.supports_effort).count();
+        assert!(
+            supports_effort_count >= 2,
+            "expected at least 2 claude models with supports_effort=true, got: {supports_effort_count}"
+        );
     }
 }

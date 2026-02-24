@@ -7,6 +7,14 @@ export type IpcRunRecord = {
   finished_at: string | null;
   agent_default: string | null;
   metadata_json: string | null;
+  model: string | null;
+  effort_level: string | null;
+};
+
+export type IpcModelInfo = {
+  id: string;
+  name: string;
+  supports_effort: boolean;
 };
 
 export type IpcStepRecord = {

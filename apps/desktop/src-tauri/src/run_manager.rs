@@ -8,6 +8,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
+use serde_json::json;
 use tokio::runtime::{Builder as TokioRuntimeBuilder, Runtime as TokioRuntime};
 use tokio::task::JoinHandle as TokioJoinHandle;
 
@@ -164,6 +165,8 @@ struct PreparedRun {
     run_id: i64,
     promptbook: PromptbookFile,
     selected_agent: Option<String>,
+    selected_model: Option<String>,
+    selected_effort: Option<String>,
     workspace_path: PathBuf,
     app_data_dir: PathBuf,
     max_parallel_runs: usize,
@@ -177,8 +180,10 @@ pub fn run_promptbook(
     promptbook_path: &str,
     agent: Option<&str>,
     workspace_dir: &str,
+    model: Option<&str>,
+    effort_level: Option<&str>,
 ) -> RunManagerResult<i64> {
-    let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
     let run_id = prepared.run_id;
     register_run_handle(run_id)?;
     if let Err(err) = execute_prepared_run_with_limits(prepared, None) {
@@ -192,9 +197,11 @@ pub fn start_run_background(
     promptbook_path: &str,
     agent: Option<&str>,
     workspace_dir: &str,
+    model: Option<&str>,
+    effort_level: Option<&str>,
     event_callback: Option<RunEventCallback>,
 ) -> RunManagerResult<i64> {
-    let prepared = prepare_run(promptbook_path, agent, workspace_dir)?;
+    let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
     let run_id = prepared.run_id;
     register_run_handle(run_id)?;
     let app_data_dir = prepared.app_data_dir.clone();
@@ -215,6 +222,8 @@ fn prepare_run(
     promptbook_path: &str,
     agent: Option<&str>,
     workspace_dir: &str,
+    model: Option<&str>,
+    effort_level: Option<&str>,
 ) -> RunManagerResult<PreparedRun> {
     let promptbook = load_promptbook(Path::new(promptbook_path))?;
     let workspace_path = Path::new(workspace_dir);
@@ -225,6 +234,12 @@ fn prepare_run(
 
     let selected_agent = normalize_agent(agent).or_else(|| promptbook.defaults.agent.clone());
     let run_started_at = now_timestamp();
+    let metadata = json!({
+        "promptbook_path": promptbook_path,
+        "model": model,
+        "effort_level": effort_level,
+    });
+    let metadata_json = Some(metadata.to_string());
     let run_id = repo.create_run(&NewRun {
         promptbook_name: promptbook.name.clone(),
         promptbook_version: promptbook.version.clone(),
@@ -232,13 +247,15 @@ fn prepare_run(
         started_at: run_started_at,
         finished_at: None,
         agent_default: selected_agent.clone(),
-        metadata_json: Some(format!("{{\"promptbook_path\":\"{promptbook_path}\"}}")),
+        metadata_json,
     })?;
 
     Ok(PreparedRun {
         run_id,
         promptbook,
         selected_agent,
+        selected_model: model.map(ToOwned::to_owned),
+        selected_effort: effort_level.map(ToOwned::to_owned),
         workspace_path: workspace_path.to_path_buf(),
         app_data_dir,
         max_parallel_runs,
@@ -270,6 +287,8 @@ fn execute_prepared_run(
         run_id,
         &prepared.promptbook,
         prepared.selected_agent.as_deref(),
+        prepared.selected_model.as_deref(),
+        prepared.selected_effort.as_deref(),
         &prepared.workspace_path,
         &prepared.app_data_dir,
         event_callback.as_ref(),
@@ -328,6 +347,8 @@ fn execute_steps(
     run_id: i64,
     promptbook: &PromptbookFile,
     selected_agent: Option<&str>,
+    selected_model: Option<&str>,
+    selected_effort: Option<&str>,
     workspace_path: &Path,
     app_data_dir: &Path,
     event_callback: Option<&RunEventCallback>,
@@ -370,7 +391,11 @@ fn execute_steps(
         let step_prompt_path = write_step_task_file(app_data_dir, run_id, step, workspace_path)?;
         let step_agent = step.agent.as_deref().unwrap_or(default_agent.as_str());
         let adapter = create_adapter(step_agent)?;
-        let adapter_options = AdapterOptions::default();
+        let adapter_options = AdapterOptions {
+            model: selected_model.map(ToOwned::to_owned),
+            effort_level: selected_effort.map(ToOwned::to_owned),
+            ..AdapterOptions::default()
+        };
         let command_spec = adapter.build_command(
             &step_prompt_path.to_string_lossy(),
             &workspace_path.to_string_lossy(),
@@ -751,13 +776,21 @@ fn is_run_cancelled(run_id: i64) -> RunManagerResult<bool> {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::StorageRepository;
 
-    use super::{run_promptbook, start_run_background};
+    use super::{cancel_run, run_promptbook, start_run_background, RunManagerError};
+
+    fn run_manager_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("run manager test lock")
+    }
 
     fn temp_workspace_dir(test_name: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -798,6 +831,27 @@ steps:
         promptbook_path
     }
 
+    fn write_large_fixture(path: &Path, step_count: usize) -> PathBuf {
+        let promptbook_path = path.join("large-dry-run.v1.yaml");
+        let mut promptbook_yaml = String::from(
+            "schema_version: \"promptbook/v1\"\nname: \"dry-run-large\"\nversion: \"1.0.0\"\ndescription: \"Fixture for cancellation\"\nsteps:\n",
+        );
+        for step in 0..step_count {
+            let step_number = step + 1;
+            promptbook_yaml.push_str(&format!(
+                "  - id: \"step-{step_number}\"\n    title: \"Step {step_number}\"\n    prompt: \"Run step {step_number}\"\n    verify:\n      - \"echo ok\"\n"
+            ));
+        }
+        fs::write(&promptbook_path, promptbook_yaml).expect("write large promptbook fixture");
+        promptbook_path
+    }
+
+    fn write_promptbook(path: &Path, file_name: &str, contents: &str) -> PathBuf {
+        let promptbook_path = path.join(file_name);
+        fs::write(&promptbook_path, contents).expect("write promptbook");
+        promptbook_path
+    }
+
     fn wait_for_run_completion(app_data_dir: &Path, run_id: i64) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -818,6 +872,7 @@ steps:
 
     #[test]
     fn dry_run_two_step_promptbook_persists_steps_logs_and_outputs() {
+        let _guard = run_manager_test_lock();
         let workspace_dir = temp_workspace_dir("run-manager-dry-run");
         let promptbook_path = write_two_step_fixture(&workspace_dir);
 
@@ -825,6 +880,8 @@ steps:
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
+            None,
+            None,
         )
         .expect("run promptbook");
 
@@ -864,6 +921,7 @@ steps:
 
     #[test]
     fn starts_two_dry_runs_in_parallel_and_persists_each_run() {
+        let _guard = run_manager_test_lock();
         let workspace_dir = temp_workspace_dir("run-manager-dry-run-parallel");
         let promptbook_path = write_two_step_fixture(&workspace_dir);
 
@@ -872,12 +930,16 @@ steps:
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
             None,
+            None,
+            None,
         )
         .expect("start first run");
         let run_id_two = start_run_background(
             &promptbook_path.to_string_lossy(),
             Some("dry-run"),
             &workspace_dir.to_string_lossy(),
+            None,
+            None,
             None,
         )
         .expect("start second run");
@@ -906,6 +968,129 @@ steps:
                 "expected FINAL output for each step"
             );
         }
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn rejects_empty_promptbook_steps() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("run-manager-empty-steps");
+        let promptbook_path = write_promptbook(
+            &workspace_dir,
+            "empty-steps.v1.yaml",
+            r#"
+schema_version: "promptbook/v1"
+name: "empty"
+version: "1.0.0"
+description: "No steps"
+steps: []
+"#
+            .trim_start(),
+        );
+
+        let result = run_promptbook(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+        );
+
+        match result {
+            Err(RunManagerError::PromptbookParse(message)) => {
+                assert!(message.contains("at least one step"));
+            }
+            _ => panic!("expected promptbook parse error for empty steps"),
+        }
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn rejects_invalid_yaml_promptbook() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("run-manager-invalid-yaml");
+        let promptbook_path = write_promptbook(
+            &workspace_dir,
+            "invalid-yaml.v1.yaml",
+            "schema_version: \"promptbook/v1\"\nname: \"bad\"\nsteps: [\n",
+        );
+
+        let result = run_promptbook(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+        );
+
+        assert!(
+            matches!(result, Err(RunManagerError::PromptbookParse(_))),
+            "expected invalid yaml parse error, got: {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn rejects_unknown_adapter() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("run-manager-unknown-adapter");
+        let promptbook_path = write_two_step_fixture(&workspace_dir);
+
+        let result = run_promptbook(
+            &promptbook_path.to_string_lossy(),
+            Some("unknown-adapter"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+        );
+
+        match result {
+            Err(RunManagerError::UnknownAgent(agent_name)) => {
+                assert_eq!(agent_name, "unknown-adapter");
+            }
+            _ => panic!("expected unknown adapter error"),
+        }
+
+        let _ = fs::remove_dir_all(workspace_dir);
+    }
+
+    #[test]
+    fn cancels_background_run_and_marks_it_failure() {
+        let _guard = run_manager_test_lock();
+        let workspace_dir = temp_workspace_dir("run-manager-cancel");
+        let promptbook_path = write_large_fixture(&workspace_dir, 120);
+
+        let run_id = start_run_background(
+            &promptbook_path.to_string_lossy(),
+            Some("dry-run"),
+            &workspace_dir.to_string_lossy(),
+            None,
+            None,
+            None,
+        )
+        .expect("start run");
+
+        let cancel_result = cancel_run(run_id).expect("cancel run");
+        assert!(cancel_result, "run should be cancellable while active");
+
+        let app_data_dir = workspace_dir.join(".promptbook_runs");
+        wait_for_run_completion(&app_data_dir, run_id);
+
+        let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).expect("open db");
+        let detail = repo
+            .get_run_detail(run_id)
+            .expect("get run detail")
+            .expect("run detail exists");
+
+        assert_eq!(detail.run.status, "failure");
+        assert!(
+            detail.steps.len() < 120,
+            "expected cancellation before all steps complete, got {} steps",
+            detail.steps.len()
+        );
 
         let _ = fs::remove_dir_all(workspace_dir);
     }
