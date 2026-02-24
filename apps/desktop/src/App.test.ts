@@ -5,7 +5,17 @@ import { createRunDetailViewModel, type IpcRunDetail } from "./ui-model";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn((cmd: string, args?: Record<string, unknown>) => {
     if (cmd === "list_agent_models") return Promise.resolve([
-      { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", supports_effort: true }
+      {
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet 4.6",
+        effort_levels: [
+          { id: "low", name: "Low" },
+          { id: "medium", name: "Medium" },
+          { id: "high", name: "High" },
+        ],
+        default_effort: "medium",
+        is_default: true,
+      }
     ]);
     if (cmd === "cancel_run") return Promise.resolve(true);
     // resume_run returns the SAME run_id (no new run created)

@@ -65,6 +65,17 @@ pub struct ProcessHandle {
     timed_out: Arc<AtomicBool>,
 }
 
+impl std::fmt::Debug for ProcessHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProcessHandle")
+            .field("pid", &self.pid)
+            .field("finished", &self.finished)
+            .field("cancelled", &self.cancelled)
+            .field("timed_out", &self.timed_out)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ProcessHandle {
     pub fn cancel(&self) -> io::Result<()> {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -132,7 +143,7 @@ pub fn spawn_process(
     options: ProcessOptions,
 ) -> io::Result<(ProcessHandle, mpsc::Receiver<OutputLine>)> {
     if options.output_transport == OutputTransport::PtyPreferred {
-        if let Some(pty_result) = try_spawn_with_pty(program, args, options)? {
+        if let Some(pty_result) = try_spawn_with_pty(program, args, options.clone())? {
             return Ok(pty_result);
         }
     }
@@ -372,5 +383,25 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(exit.cancelled);
         assert!(!exit.success, "cancelled process must not succeed: {exit:?}");
+    }
+
+    #[test]
+    fn timeout_terminates_process_and_sets_timed_out_flag() {
+        let (mut handle, _output_rx) = spawn_process(
+            "bash",
+            &["-lc", "sleep 30"],
+            ProcessOptions {
+                timeout: Some(Duration::from_millis(200)),
+                ..ProcessOptions::default()
+            },
+        )
+        .expect("spawn process");
+
+        let started = Instant::now();
+        let exit = handle.wait().expect("wait for process");
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(exit.timed_out, "expected timed_out exit: {exit:?}");
+        assert!(!exit.success, "timed out process must not succeed: {exit:?}");
     }
 }

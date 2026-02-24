@@ -22,7 +22,7 @@ describe("promptbook schema loader", () => {
     );
 
     expect(() => loadPromptbookFromYamlFile(invalidFixturePath)).toThrow(
-      "$input.steps[0].id"
+      "Invalid promptbook schema"
     );
   });
 

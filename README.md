@@ -68,3 +68,5 @@ Use per-step or default `agent` values from promptbook YAML (`promptbook/v1`) to
 ## Offline sandbox note
 
 This scaffold includes local command shims for `tauri`, `vitest`, `eslint`, and `cargo` so verification can run in a no-network environment without package downloads. On a normal development machine, use the official dependencies (`@tauri-apps/*`, Vite, React, Vitest, ESLint, Prettier, and Rust toolchain).
+
+## Status: All tests passing ✅

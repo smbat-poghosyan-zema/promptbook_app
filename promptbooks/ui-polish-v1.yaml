@@ -1,0 +1,629 @@
+schema_version: "promptbook/v1"
+name: "ui-polish"
+version: "1.0.0"
+description: >
+  Round-2 UI polish: fix Runs panel layout + status labels,
+  correct real agent model lists, and redesign step rows with
+  STEP prefix + inline stop/resume buttons.
+
+defaults:
+  agent: "claude"
+  workspace_dir: "."
+  approval_mode: "auto"
+  timeout_minutes: 45
+
+global_rules:
+  - "Work in the repo at the workspace_dir passed at runtime."
+  - "After implementing, run 'pnpm test' and ensure all tests pass."
+  - "Run 'pnpm lint' and fix any errors before finishing."
+  - "Commit after each step: 'polish/<step-id>: <step-title>'."
+  - "TDD: update tests alongside implementation; do NOT break existing tests."
+  - "Frontend lives in apps/desktop/src/. Rust in apps/desktop/src-tauri/src/."
+
+steps:
+  - id: "runs-panel-layout"
+    title: "Runs panel: layout spacing + human-readable status labels"
+    prompt: |
+      ## Problem
+      The Runs panel items look cramped — the status badge is flush against the
+      title with no breathing room, and raw internal status strings ("running",
+      "failure") are shown instead of human-friendly labels.
+
+      ## Goals
+      1. Add proper spacing/layout so title and status badge sit apart.
+      2. Map internal status strings to user-friendly display labels:
+         - "running"  → "in progress"
+         - "failure"  → "failure"
+         - "success"  → "success"
+         - "stopped"  → "stopped"   (any future cancelled/stopped status)
+         (keep the raw status as a CSS class for colour coding)
+      3. Update status-pill CSS colours to cover the new labels:
+         - in-progress → amber
+         - stopped → slate/grey
+         - success → green
+         - failure → red
+      4. Trim the workspace path in the list item so it doesn't overflow —
+         use CSS `text-overflow: ellipsis` and `overflow: hidden` on that span,
+         and add `title={run.workspaceLine}` for the full path on hover.
+
+      ## Implementation
+
+      ### 1. ui-model.ts — add a `statusLabel` helper and update `RunListItemViewModel`
+
+      Add a pure function that maps raw status to display label:
+      ```ts
+      export function formatRunStatus(status: string): string {
+        switch (status) {
+          case "running": return "in progress";
+          case "stopped":
+          case "cancelled": return "stopped";
+          case "success": return "success";
+          case "failure": return "failure";
+          default: return status;
+        }
+      }
+      ```
+
+      Add `statusLabel: string` to `RunListItemViewModel`:
+      ```ts
+      export type RunListItemViewModel = {
+        id: number;
+        title: string;
+        subtitle: string;
+        agentLine: string;
+        workspaceLine: string;
+        stepInfo: string;
+        status: string;          // raw (for CSS class)
+        statusLabel: string;     // human-readable (for display)
+        startedAt: string;
+      };
+      ```
+
+      In `createRunListViewModel`, add:
+      ```ts
+      statusLabel: formatRunStatus(run.status),
+      ```
+
+      ### 2. App.tsx — use `statusLabel` in the run-item JSX
+
+      In the run list rendering, change:
+      ```tsx
+      <span className={`status-pill ${run.status}`}>{run.status}</span>
+      ```
+      to:
+      ```tsx
+      <span className={`status-pill ${run.status}`}>{run.statusLabel}</span>
+      ```
+
+      Also ensure the run-item-header uses `display: flex; align-items: center; gap: 0.5rem`
+      so title and badge don't overlap. Update the class names in JSX if needed.
+
+      ### 3. styles.css — status-pill colours and run-item layout tweaks
+
+      Add/update these CSS rules:
+
+      ```css
+      /* Status pill — all named statuses */
+      .status-pill {
+        display: inline-block;
+        border-radius: 999px;
+        padding: 0.15rem 0.55rem;
+        border: 1px solid #cbd5e1;
+        font-size: 0.78rem;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
+      .status-pill.running {
+        border-color: #f59e0b;
+        color: #b45309;
+        background: #fffbeb;
+      }
+
+      .status-pill.success {
+        border-color: #16a34a;
+        color: #15803d;
+        background: #f0fdf4;
+      }
+
+      .status-pill.failure {
+        border-color: #dc2626;
+        color: #b91c1c;
+        background: #fef2f2;
+      }
+
+      .status-pill.stopped,
+      .status-pill.cancelled {
+        border-color: #94a3b8;
+        color: #475569;
+        background: #f8fafc;
+      }
+
+      /* Run item header: title + badge side by side */
+      .run-item-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex-wrap: nowrap;
+      }
+
+      .run-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* Meta lines (agent, workspace, step info) */
+      .run-item-meta {
+        font-size: 0.82rem;
+        color: #475569;
+        overflow: hidden;
+      }
+
+      .run-workspace,
+      .run-agent,
+      .run-step {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      /* Footer (started at) */
+      .run-item-footer {
+        font-size: 0.78rem;
+        color: #94a3b8;
+      }
+      ```
+
+      ### 4. Tests — update ui-model.test.ts
+
+      Add a test for `formatRunStatus`:
+      ```ts
+      describe("formatRunStatus", () => {
+        it("maps running to in progress", () => {
+          expect(formatRunStatus("running")).toBe("in progress");
+        });
+        it("maps stopped to stopped", () => {
+          expect(formatRunStatus("stopped")).toBe("stopped");
+        });
+        it("maps success and failure to themselves", () => {
+          expect(formatRunStatus("success")).toBe("success");
+          expect(formatRunStatus("failure")).toBe("failure");
+        });
+        it("passes through unknown statuses", () => {
+          expect(formatRunStatus("pending")).toBe("pending");
+        });
+      });
+      ```
+
+      Update any existing `createRunListViewModel` tests that assert on `status`
+      or `subtitle` to also assert `statusLabel`.
+
+      ### 5. Verification
+      ```
+      pnpm test
+      pnpm lint
+      ```
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "fix-model-registry"
+    title: "Fix agent model registry with real, accurate model IDs"
+    prompt: |
+      ## Problem
+      The model registry in `apps/desktop/src-tauri/src/agent_adapter.rs`
+      has wrong model IDs:
+      - **Codex**: shows `o4-mini` and `o3` — but the actual Codex CLI on this
+        machine uses OpenAI GPT-5 Codex models (visible in ~/.codex/config.toml:
+        `model = "gpt-5.3-codex"`) and supports `gpt-5.3-codex`, `gpt-5.2-codex`, `o3`.
+      - **Claude**: shows old model IDs (`claude-opus-4-5`, `claude-sonnet-4-5`,
+        `claude-haiku-3-5`). The correct current model IDs per Anthropic docs are
+        `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+      - **Copilot**: shows empty — GitHub Copilot CLI (`gh copilot`) supports a
+        model flag but is not installed on this machine. Show a placeholder
+        empty list (no models) so the dropdown is hidden for Copilot.
+      - **dry-run**: no models needed (correct).
+
+      ## Implementation
+
+      ### 1. Update `models_for_agent` in agent_adapter.rs
+
+      Replace the entire function body with the correct data:
+
+      ```rust
+      pub fn models_for_agent(agent_name: &str) -> Vec<ModelInfo> {
+          match agent_name {
+              "claude" => vec![
+                  ModelInfo {
+                      id: "claude-opus-4-6".into(),
+                      name: "Claude Opus 4.6".into(),
+                      supports_effort: true,
+                  },
+                  ModelInfo {
+                      id: "claude-sonnet-4-6".into(),
+                      name: "Claude Sonnet 4.6".into(),
+                      supports_effort: true,
+                  },
+                  ModelInfo {
+                      id: "claude-haiku-4-5".into(),
+                      name: "Claude Haiku 4.5".into(),
+                      supports_effort: true,
+                  },
+              ],
+              "codex" => vec![
+                  ModelInfo {
+                      id: "gpt-5.3-codex".into(),
+                      name: "GPT-5.3 Codex (latest)".into(),
+                      supports_effort: true,
+                  },
+                  ModelInfo {
+                      id: "gpt-5.2-codex".into(),
+                      name: "GPT-5.2 Codex".into(),
+                      supports_effort: true,
+                  },
+                  ModelInfo {
+                      id: "o3".into(),
+                      name: "o3".into(),
+                      supports_effort: true,
+                  },
+              ],
+              // Copilot CLI is not installed; no model selection supported.
+              // dry-run needs no model selection either.
+              _ => vec![],
+          }
+      }
+      ```
+
+      ### 2. Update CodexAdapter::build_command in agent_adapter.rs
+
+      Codex CLI accepts `--model <MODEL>` on the `exec` subcommand:
+      ```
+      codex exec --model gpt-5.3-codex --full-auto --sandbox workspace-write "prompt"
+      ```
+
+      Current code already adds `--model` flag when `options.model` is set.
+      Verify the placement: `--model` must come BEFORE the prompt argument.
+      The args array should be:
+      ```
+      ["exec", "--full-auto", "--sandbox", "workspace-write", "--model", "<model>", "<instruction>"]
+      ```
+      Double-check the current order in `CodexAdapter::build_command`. If the
+      model is appended after the instruction (prompt), move it to before the prompt.
+
+      Also handle `effort_level` for Codex: it uses `-c model_reasoning_effort="<level>"`.
+      When `options.effort_level` is Some, add to the args:
+      ```rust
+      if let Some(ref effort) = options.effort_level {
+          args.push("-c".to_string());
+          args.push(format!("model_reasoning_effort=\"{}\"", effort));
+      }
+      ```
+      This should go before the instruction prompt too.
+
+      ### 3. Update the model test in agent_adapter.rs
+
+      Update `models_for_agent_returns_claude_models_with_effort_support` to check
+      the new model IDs:
+      ```rust
+      #[test]
+      fn models_for_agent_returns_correct_claude_models() {
+          let models = models_for_agent("claude");
+          assert_eq!(models.len(), 3);
+          let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+          assert!(ids.contains(&"claude-opus-4-6"));
+          assert!(ids.contains(&"claude-sonnet-4-6"));
+          assert!(ids.contains(&"claude-haiku-4-5"));
+          assert!(models.iter().all(|m| m.supports_effort));
+      }
+
+      #[test]
+      fn models_for_agent_returns_correct_codex_models() {
+          let models = models_for_agent("codex");
+          assert_eq!(models.len(), 3);
+          let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+          assert!(ids.contains(&"gpt-5.3-codex"));
+          assert!(ids.contains(&"gpt-5.2-codex"));
+          assert!(ids.contains(&"o3"));
+          assert!(models.iter().all(|m| m.supports_effort));
+      }
+
+      #[test]
+      fn models_for_agent_returns_empty_for_copilot_and_dry_run() {
+          assert!(models_for_agent("copilot").is_empty());
+          assert!(models_for_agent("dry-run").is_empty());
+      }
+      ```
+
+      Remove any now-outdated tests that reference the old model IDs.
+
+      ### 4. Verification
+      ```
+      cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      pnpm test
+      pnpm lint
+      ```
+
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "step-row-redesign"
+    title: "Run Detail: step rows with STEP prefix + inline stop/resume buttons"
+    prompt: |
+      ## Problem
+      The step list in Run Detail shows just the title and a status pill, with
+      Stop/Resume buttons floating in the panel header — awkward and disconnected
+      from the step they affect.
+
+      ## Goal
+      Redesign each step row to look like:
+      ```
+      [ STEP 1 ]  Create a file  ─────────────────────  [ in progress ]  [ Stop ]
+      [ STEP 2 ]  Run tests  ──────────────────────────  [ next ]
+      [ STEP 3 ]  Build release  ──────────────────────  [ success ]
+      ```
+      Rules:
+      - Every step row starts with a numbered badge: `STEP N`
+      - The step title follows, then a dotted/line filler that grows to push
+        the status pill and action buttons to the right.
+      - Status pill uses the same human-readable labels as the Runs panel
+        (in progress / stopped / success / failure / next).
+      - **Stop** button appears only on the row whose `status === "running"`.
+        Clicking it calls `cancel_run` for the current run.
+      - **Resume** button appears only on rows where `status === "failure"` or
+        `status === "stopped"` AND the run's overall status is not "running"
+        (i.e. the run itself has stopped).
+        Clicking it calls `resume_run` for the current run.
+      - The old Stop/Resume buttons in the panel header (`run-detail-actions`) are
+        REMOVED — the action lives on the step row now.
+      - Clicking a step row (not the button) still selects it as the active step.
+
+      ## Implementation
+
+      ### 1. ui-model.ts — add step number to StepViewModel
+
+      Add `stepNumber: number` to `StepViewModel`:
+      ```ts
+      export type StepViewModel = {
+        stepId: string;
+        title: string;
+        status: string;           // raw internal status
+        statusLabel: string;      // human-readable (reuse formatRunStatus)
+        stepNumber: number;       // 1-based index
+        isActive: boolean;
+        liveLines: string[];
+        finalOutput: string | null;
+      };
+      ```
+
+      In `createRunDetailViewModel`, compute `stepNumber: idx + 1` in the
+      `.map((step, idx) => ...)` call.
+
+      Also apply `formatRunStatus` for `statusLabel`:
+      ```ts
+      statusLabel: formatRunStatus(displayStatus),
+      ```
+      Import `formatRunStatus` from the same file (it was added in step 1).
+
+      ### 2. App.tsx — remove old header Stop/Resume buttons
+
+      Find and DELETE the block that renders the Stop and Resume buttons in the
+      run-detail panel header:
+      ```tsx
+      // DELETE THIS BLOCK:
+      {runDetail && runDetail.run.status === "running" && (
+        <button ... onClick={() => void handleStopRun()}>Stop</button>
+      )}
+      {runDetail && (runDetail.run.status === "failure") && (
+        <button ... onClick={() => void handleResumeRun()}>Resume from failed step</button>
+      )}
+      ```
+
+      ### 3. App.tsx — redesign the step row JSX
+
+      Replace the current step row render with:
+      ```tsx
+      <ul className="step-list">
+        {detailViewModel.stepRows.length === 0 ? (
+          <li className="empty-state">No steps recorded yet.</li>
+        ) : (
+          detailViewModel.stepRows.map((step) => (
+            <li key={step.stepId}
+                className={`step-row ${step.isActive ? "is-active" : ""} ${step.status}`}>
+
+              {/* Clickable area: selects this step's output pane */}
+              <button
+                type="button"
+                className="step-row-select"
+                onClick={() => setActiveStepId(step.stepId)}
+                aria-label={`View step ${step.stepNumber}: ${step.title}`}
+              >
+                <span className="step-number-badge">STEP {step.stepNumber}</span>
+                <span className="step-title">{step.title}</span>
+                <span className="step-filler" aria-hidden="true" />
+                <span className={`status-pill ${step.status}`}>{step.statusLabel}</span>
+              </button>
+
+              {/* Action buttons — only shown when relevant */}
+              {step.status === "running" && (
+                <button
+                  type="button"
+                  className="step-action-btn danger-action"
+                  onClick={() => void handleStopRun()}
+                  title="Stop this step"
+                >
+                  Stop
+                </button>
+              )}
+              {(step.status === "failure" || step.status === "stopped") &&
+               runDetail?.run.status !== "running" && (
+                <button
+                  type="button"
+                  className="step-action-btn secondary-action"
+                  onClick={() => void handleResumeRun()}
+                  title="Resume from this step"
+                >
+                  Resume
+                </button>
+              )}
+            </li>
+          ))
+        )}
+      </ul>
+      ```
+
+      ### 4. styles.css — step row styles
+
+      Replace existing `.step-row` and `.step-row-btn` styles with:
+
+      ```css
+      .step-list {
+        list-style: none;
+        margin: 0;
+        padding: 0.75rem 1rem 0;
+        display: grid;
+        gap: 0.4rem;
+      }
+
+      .step-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        overflow: hidden;
+        min-height: 2.2rem;
+      }
+
+      .step-row.is-active {
+        border-color: #0f172a;
+        background: #f8fafc;
+      }
+
+      /* The clickable select area fills the row */
+      .step-row-select {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.35rem 0.6rem;
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        overflow: hidden;
+      }
+
+      .step-row-select:hover {
+        background: #f1f5f9;
+      }
+
+      /* STEP N badge */
+      .step-number-badge {
+        flex-shrink: 0;
+        font-size: 0.72rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        background: #0f172a;
+        color: #fff;
+        border-radius: 4px;
+        padding: 0.1rem 0.35rem;
+      }
+
+      /* Title */
+      .step-row .step-title {
+        flex-shrink: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.9rem;
+      }
+
+      /* Filler that pushes status+buttons to the right */
+      .step-filler {
+        flex: 1;
+        border-bottom: 1px dashed #cbd5e1;
+        margin: 0 0.35rem;
+        min-width: 0.5rem;
+        align-self: center;
+      }
+
+      /* Stop / Resume action buttons on the step row */
+      .step-action-btn {
+        flex-shrink: 0;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.5rem;
+        border-radius: 4px;
+        border: 1px solid;
+        cursor: pointer;
+        margin-right: 0.4rem;
+      }
+
+      .step-action-btn.danger-action {
+        background: #fee2e2;
+        color: #991b1b;
+        border-color: #fca5a5;
+      }
+
+      .step-action-btn.secondary-action {
+        background: #f8fafc;
+        color: #0f172a;
+        border-color: #cbd5e1;
+      }
+      ```
+
+      ### 5. Tests — ui-model.test.ts
+
+      Update the test that checks `stepRows` shape to assert:
+      - `step.stepNumber` is 1-based (first step has `stepNumber === 1`)
+      - `step.statusLabel === "in progress"` when `status === "running"`
+      - `step.statusLabel === "next"` when `status === "next"`
+
+      Update App.test.ts smoke test to account for removed header Stop/Resume
+      buttons and new step row structure.
+
+      ### 6. Verification
+      ```
+      pnpm test
+      pnpm lint
+      ```
+
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "final-check"
+    title: "Final check: all tests green, lint clean, TEST_REPORT updated"
+    prompt: |
+      Run the full test suite and lint. Fix anything still broken.
+      Update TEST_REPORT.md with the results of this polish round.
+
+      ```
+      pnpm test
+      cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      pnpm lint
+      ```
+
+      Then update TEST_REPORT.md:
+      - Append a new section "## Round 2 Polish (ui-polish v1.0.0)" with:
+        - What was changed
+        - Final test counts
+        - Lint status
+
+      Commit: `polish/final-check: Round 2 polish — all green`
+
+    verify:
+      - "pnpm test"
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm lint"
+      - "test -f TEST_REPORT.md"

@@ -77,7 +77,8 @@ export function App() {
   );
 
   const selectedModelInfo = availableModels.find((m) => m.id === dashboard.model) ?? null;
-  const supportsEffort = selectedModelInfo?.supports_effort ?? false;
+  const currentEffortLevels = selectedModelInfo?.effort_levels ?? [];
+  const supportsEffort = currentEffortLevels.length > 0;
 
   function pushToast(message: string, variant: ToastVariant = "error"): void {
     setToasts((current) => [
@@ -143,9 +144,14 @@ export function App() {
     invoke<IpcModelInfo[]>("list_agent_models", { agent: dashboard.agent })
       .then((models) => {
         setAvailableModels(models);
+        const defaultModel = models.find((m) => m.is_default) ?? models[0];
         const currentExists = models.some((m) => m.id === dashboard.model);
-        if (!currentExists) {
-          setDashboard((d) => ({ ...d, model: models[0]?.id ?? "" }));
+        if (!currentExists && defaultModel) {
+          setDashboard((d) => ({
+            ...d,
+            model: defaultModel.id,
+            effortLevel: defaultModel.default_effort ?? d.effortLevel,
+          }));
         }
       })
       .catch(() => setAvailableModels([]));
@@ -472,7 +478,15 @@ export function App() {
                 Model
                 <select
                   value={dashboard.model}
-                  onChange={(event) => updateDashboardField("model", event.target.value)}
+                  onChange={(event) => {
+                    const newModelId = event.target.value;
+                    const modelInfo = availableModels.find((m) => m.id === newModelId);
+                    setDashboard((d) => ({
+                      ...d,
+                      model: newModelId,
+                      effortLevel: modelInfo?.default_effort ?? d.effortLevel,
+                    }));
+                  }}
                   disabled={availableModels.length === 0}
                 >
                   {availableModels.length === 0 ? (
@@ -493,9 +507,13 @@ export function App() {
                   onChange={(event) => updateDashboardField("effortLevel", event.target.value)}
                   disabled={!supportsEffort}
                 >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  {currentEffortLevels.length === 0 ? (
+                    <option value="">—</option>
+                  ) : (
+                    currentEffortLevels.map((level) => (
+                      <option key={level.id} value={level.id}>{level.name}</option>
+                    ))
+                  )}
                 </select>
               </label>
             </div>

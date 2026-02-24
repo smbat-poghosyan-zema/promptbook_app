@@ -1,0 +1,1282 @@
+schema_version: "promptbook/v1"
+name: "fix-and-enhance"
+version: "1.0.0"
+description: >
+  Implements all UI fixes and feature enhancements for Promptbook Runner:
+  native file picker, open-folder in file manager, dynamic model+effort selection,
+  rich run-list items, per-step live progress / final output split, and stop/resume.
+
+defaults:
+  agent: "claude"
+  workspace_dir: "."
+  approval_mode: "auto"
+  timeout_minutes: 60
+
+global_rules:
+  - "Work in the repo at the workspace_dir passed at runtime."
+  - "Run 'pnpm test' and 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' after each step to ensure green."
+  - "Run 'pnpm lint' after each step to ensure zero lint errors."
+  - "Commit after each step with message 'fix/<step-id>: <step-title>'."
+  - "TDD: add or update tests before or alongside implementation."
+  - "Do NOT break existing tests. If a test becomes stale, update it."
+  - "Keep changes minimal and focused on the step goal."
+  - "The app uses Tauri v2 + React + TypeScript (pnpm workspace)."
+  - "Rust code lives in apps/desktop/src-tauri/src/. Frontend in apps/desktop/src/."
+  - "Shared types live in packages/shared/src/."
+
+steps:
+  - id: "fix-file-picker"
+    title: "Fix Browse button: native Tauri file dialog"
+    prompt: |
+      The "Browse" button in the Promptbook file picker currently does nothing useful —
+      the Rust IPC command `open_file_picker_for_promptbook` in
+      `apps/desktop/src-tauri/src/ipc.rs` only reads from a `PROMPTBOOK_PATH`
+      environment variable and returns `None` when the env var is not set.
+
+      ## Goal
+      Replace that env-var hack with a real native file-open dialog using
+      `tauri-plugin-dialog` (Tauri v2).
+
+      ## Implementation steps
+
+      ### 1. Add the Tauri dialog plugin
+
+      In `apps/desktop/src-tauri/Cargo.toml`, add to `[dependencies]`:
+      ```
+      tauri-plugin-dialog = "2"
+      ```
+
+      ### 2. Register the plugin in lib.rs
+
+      In `apps/desktop/src-tauri/src/lib.rs`, in the `run()` function,
+      after `.setup(|app| { … })` and before `.invoke_handler(…)`, add:
+      ```rust
+      .plugin(tauri_plugin_dialog::init())
+      ```
+
+      Import at the top of lib.rs (or make sure it's in scope):
+      ```rust
+      // tauri_plugin_dialog is re-exported via the plugin; no explicit use needed
+      // but ensure the crate is in scope for init()
+      ```
+
+      ### 3. Rewrite `open_file_picker_for_promptbook` in ipc.rs
+
+      Make it `async` and use the dialog plugin:
+      ```rust
+      #[tauri::command]
+      pub async fn open_file_picker_for_promptbook(
+          app_handle: tauri::AppHandle,
+      ) -> IpcResult<Option<String>> {
+          use tauri_plugin_dialog::DialogExt;
+          let path = app_handle
+              .dialog()
+              .file()
+              .add_filter("Promptbook YAML", &["yaml", "yml"])
+              .blocking_pick_file();
+          Ok(path.map(|p| p.to_string()))
+      }
+      ```
+
+      Note: `blocking_pick_file()` blocks the current thread until the user
+      closes the dialog; this is fine for an async Tauri command running on
+      a thread pool.  `FilePath::to_string()` gives the absolute path string.
+
+      ### 4. Update the invoke_handler in lib.rs
+
+      The `ipc::open_file_picker_for_promptbook` entry in `tauri::generate_handler![]`
+      doesn't need to change — Tauri v2 handles async commands automatically.
+
+      ### 5. Update existing IPC test
+
+      The existing test `file_picker_uses_promptbook_path_env_var` in
+      `apps/desktop/src-tauri/src/ipc.rs` relied on the env-var path.
+      Replace it with a test that just verifies the function signature compiles
+      (we can't open a real dialog in unit tests) — rename it to
+      `file_picker_command_compiles` and assert `true` (compile-time proof).
+      Keep `file_picker_returns_none_for_missing_or_unset_path` but mark it as
+      a doc-comment that its behavior has changed.
+
+      Actually: just delete the two old file-picker env-var tests since the
+      implementation no longer uses env vars. Add a compile-time smoke comment.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "fix-open-sample-folder"
+    title: "Fix 'Open sample promptbooks folder' — actually open in file manager"
+    prompt: |
+      Currently the "Open sample promptbooks folder" button shows a toast with the
+      folder path but doesn't open anything.  The Rust IPC command
+      `open_sample_promptbooks_folder` in `apps/desktop/src-tauri/src/ipc.rs`
+      just resolves and returns the path string.
+
+      ## Goal
+      Make the button actually open the folder in the system file manager AND
+      remove the toast (the folder opening is feedback enough), OR keep a
+      dismissible toast only as a fallback error message.
+
+      ## Implementation steps
+
+      ### 1. Add `tauri-plugin-shell` to Cargo.toml
+      ```
+      tauri-plugin-shell = "2"
+      ```
+
+      ### 2. Register the plugin in lib.rs
+      In `run()`, chain:
+      ```rust
+      .plugin(tauri_plugin_shell::init())
+      ```
+
+      ### 3. Rewrite `open_sample_promptbooks_folder` in ipc.rs
+      Make it `async` and open the folder using the shell plugin:
+      ```rust
+      #[tauri::command]
+      pub async fn open_sample_promptbooks_folder(
+          app_handle: tauri::AppHandle,
+      ) -> IpcResult<String> {
+          use tauri_plugin_shell::ShellExt;
+          let sample_dir = resolve_sample_promptbooks_dir()?;
+          let path_str = sample_dir.to_string_lossy().to_string();
+          // Open in system file manager (xdg-open on Linux)
+          app_handle
+              .shell()
+              .command("xdg-open")
+              .args([&path_str])
+              .spawn()
+              .map_err(|err| err.to_string())?;
+          Ok(path_str)
+      }
+      ```
+
+      ### 4. Update the frontend toast in App.tsx
+
+      In `handleOpenSamplePromptbooksFolder`, remove the info toast line:
+      ```tsx
+      pushToast(`Sample promptbooks folder: ${sampleFolderPath}`, "info");
+      ```
+      Instead, only show an error toast if something fails (already handled by
+      the catch block).  The function still works — it just no longer shows a
+      non-dismissible info toast on success.
+
+      ### 5. Update the test in ipc.rs
+
+      The existing test `sample_promptbook_listing_filters_and_sorts_v1_yaml_files`
+      calls `open_sample_promptbooks_folder()` directly without an AppHandle
+      (since the refactored version requires one).
+      Split: keep the listing/filtering test using `list_sample_promptbooks()` and
+      `resolve_sample_promptbooks_dir()` directly (which don't need AppHandle),
+      and just remove the `open_sample_promptbooks_folder` unit-test call (since
+      we can't construct an AppHandle in unit tests — the IPC test for dialog
+      commands is covered by compile-time verification).
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "model-effort-backend"
+    title: "Backend: dynamic model+effort selection per agent"
+    prompt: |
+      Add the ability to specify a model and effort level when starting a run,
+      and expose a command to list available models per agent.
+
+      ## Goal
+      - New IPC command: `list_agent_models(agent: String) -> Vec<IpcModelInfo>`
+      - Update `start_run` to accept `model: Option<String>` and `effort_level: Option<String>`
+      - Update `AdapterOptions` and each adapter's `build_command` to use model/effort
+      - Persist model+effort in the run's `metadata_json`
+
+      ## Implementation
+
+      ### 1. Define model registry in agent_adapter.rs
+
+      Add a data structure and function at the bottom of
+      `apps/desktop/src-tauri/src/agent_adapter.rs`:
+
+      ```rust
+      #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+      pub struct ModelInfo {
+          pub id: String,
+          pub name: String,
+          pub supports_effort: bool,
+      }
+
+      pub fn models_for_agent(agent_name: &str) -> Vec<ModelInfo> {
+          match agent_name {
+              "claude" => vec![
+                  ModelInfo { id: "claude-opus-4-5".into(), name: "Claude Opus 4.5".into(), supports_effort: true },
+                  ModelInfo { id: "claude-sonnet-4-5".into(), name: "Claude Sonnet 4.5".into(), supports_effort: true },
+                  ModelInfo { id: "claude-sonnet-4-6".into(), name: "Claude Sonnet 4.6".into(), supports_effort: true },
+                  ModelInfo { id: "claude-haiku-3-5".into(), name: "Claude Haiku 3.5".into(), supports_effort: false },
+              ],
+              "codex" => vec![
+                  ModelInfo { id: "o4-mini".into(), name: "o4-mini".into(), supports_effort: true },
+                  ModelInfo { id: "o3".into(), name: "o3".into(), supports_effort: true },
+              ],
+              _ => vec![],
+          }
+      }
+      ```
+
+      ### 2. Extend AdapterOptions in agent_adapter.rs
+
+      Add two fields to `AdapterOptions`:
+      ```rust
+      pub struct AdapterOptions {
+          pub system_prompt: String,
+          pub prompt_override: Option<String>,
+          pub allow_all_tools: bool,
+          pub model: Option<String>,           // NEW
+          pub effort_level: Option<String>,    // NEW ("low" | "medium" | "high")
+      }
+      ```
+      Update `impl Default for AdapterOptions` to set both new fields to `None`.
+
+      ### 3. Update ClaudeAdapter::build_command
+
+      In `ClaudeAdapter::build_command`, extend the shell command to include
+      `--model` and `--effort` flags when they are set:
+      ```rust
+      let mut cmd_parts = vec![format!("cat {}", shell_single_quote(step_prompt_file_path))];
+      cmd_parts.push("|".to_string());
+      cmd_parts.push("claude".to_string());
+      if let Some(ref model) = options.model {
+          cmd_parts.push(format!("--model {}", shell_single_quote(model)));
+      }
+      if let Some(ref effort) = options.effort_level {
+          cmd_parts.push(format!("--effort {}", shell_single_quote(effort)));
+      }
+      cmd_parts.push("-p".to_string());
+      cmd_parts.push(shell_single_quote(&options.system_prompt));
+      let command = cmd_parts.join(" ");
+      CommandSpec::new("bash", vec!["-lc".to_string(), command], Some(PathBuf::from(workspace_dir)))
+      ```
+
+      ### 4. Update CodexAdapter::build_command
+
+      Codex uses `--model` flag:
+      ```rust
+      let mut args = vec![
+          "exec".to_string(),
+          "--full-auto".to_string(),
+          "--sandbox".to_string(),
+          "workspace-write".to_string(),
+      ];
+      if let Some(ref model) = options.model {
+          args.push("--model".to_string());
+          args.push(model.clone());
+      }
+      args.push(instruction);
+      ```
+
+      ### 5. Thread model+effort through run_manager.rs
+
+      a. Extend `PreparedRun` struct:
+      ```rust
+      pub struct PreparedRun {
+          // existing fields …
+          pub selected_model: Option<String>,
+          pub selected_effort: Option<String>,
+      }
+      ```
+
+      b. Extend `prepare_run` signature:
+      ```rust
+      fn prepare_run(
+          promptbook_path: &str,
+          agent: Option<&str>,
+          workspace_dir: &str,
+          model: Option<&str>,      // NEW
+          effort_level: Option<&str>, // NEW
+      ) -> RunManagerResult<PreparedRun>
+      ```
+      Set `selected_model` and `selected_effort` from parameters.
+      Persist model+effort into `metadata_json`:
+      ```rust
+      let metadata = serde_json::json!({
+          "promptbook_path": promptbook_path,
+          "model": model,
+          "effort_level": effort_level,
+      });
+      let metadata_json = Some(metadata.to_string());
+      ```
+
+      c. Pass model+effort to `execute_steps` → `AdapterOptions`:
+      ```rust
+      let adapter_options = AdapterOptions {
+          model: prepared.selected_model.clone(),
+          effort_level: prepared.selected_effort.clone(),
+          ..AdapterOptions::default()
+      };
+      ```
+
+      d. Update `run_promptbook` and `start_run_background` public signatures to
+      accept `model: Option<&str>` and `effort_level: Option<&str>`.
+
+      ### 6. New IPC command `list_agent_models` in ipc.rs
+
+      ```rust
+      #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+      pub struct IpcModelInfo {
+          pub id: String,
+          pub name: String,
+          pub supports_effort: bool,
+      }
+
+      #[tauri::command]
+      pub fn list_agent_models(agent: String) -> IpcResult<Vec<IpcModelInfo>> {
+          use crate::agent_adapter::{models_for_agent, ModelInfo};
+          Ok(models_for_agent(&agent)
+              .into_iter()
+              .map(|m: ModelInfo| IpcModelInfo { id: m.id, name: m.name, supports_effort: m.supports_effort })
+              .collect())
+      }
+      ```
+
+      ### 7. Update `start_run` IPC command signature
+
+      ```rust
+      #[tauri::command]
+      pub fn start_run(
+          state: tauri::State<'_, IpcState>,
+          promptbook_path: String,
+          agent: Option<String>,
+          model: Option<String>,         // NEW
+          effort_level: Option<String>,  // NEW
+          workspace_dir: String,
+      ) -> IpcResult<i64>
+      ```
+
+      Pass `model.as_deref()` and `effort_level.as_deref()` to `start_run_background`.
+
+      ### 8. Register `list_agent_models` in lib.rs invoke_handler
+
+      Add `ipc::list_agent_models` to the `tauri::generate_handler![]` macro call.
+
+      ### 9. Update IpcRunRecord to expose model and effort
+
+      Add to `IpcRunRecord` struct in ipc.rs:
+      ```rust
+      pub model: Option<String>,
+      pub effort_level: Option<String>,
+      ```
+      Populate them by parsing the run's `metadata_json` field:
+      ```rust
+      impl From<RunRecord> for IpcRunRecord {
+          fn from(value: RunRecord) -> Self {
+              let (model, effort_level) = parse_model_effort_from_metadata(value.metadata_json.as_deref());
+              Self {
+                  // existing fields …
+                  model,
+                  effort_level,
+              }
+          }
+      }
+
+      fn parse_model_effort_from_metadata(metadata: Option<&str>) -> (Option<String>, Option<String>) {
+          let Some(json) = metadata else { return (None, None) };
+          let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else { return (None, None) };
+          let model = value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+          let effort = value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+          (model, effort)
+      }
+      ```
+
+      ### 10. Update TypeScript types in ui-model.ts
+
+      Add to `IpcRunRecord`:
+      ```ts
+      model: string | null;
+      effort_level: string | null;
+      ```
+      Add to `IpcModelInfo` (new type):
+      ```ts
+      export type IpcModelInfo = {
+        id: string;
+        name: string;
+        supports_effort: boolean;
+      };
+      ```
+
+      ### 11. Update Rust unit tests
+
+      - Update `run_event_envelope_json_roundtrip` and `run_payload_structs_json_roundtrip`
+        tests in ipc.rs to include the new `model` and `effort_level` fields in `IpcRunRecord`.
+      - Add a test `list_agent_models_returns_claude_models` that asserts
+        `list_agent_models("claude".to_string())` returns at least 2 items with `supports_effort = true`.
+      - Update dry-run tests in run_manager.rs to pass `None, None` for model/effort.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "model-effort-ui"
+    title: "Frontend: dynamic model + effort dropdowns"
+    prompt: |
+      Add model and effort level selectors to the dashboard form in App.tsx.
+      The model list is fetched dynamically from the backend per agent,
+      and the effort dropdown is shown only when the selected model supports it.
+
+      ## Goal
+      After a user picks an agent, a second dropdown appears with available models
+      for that agent. If the chosen model `supports_effort === true`, a third dropdown
+      appears for effort level: low / medium / high.
+
+      ## Implementation
+
+      ### 1. Extend DashboardForm type in App.tsx
+
+      ```tsx
+      type DashboardForm = {
+        promptbookPath: string;
+        agent: string;
+        model: string;
+        effortLevel: string;   // "low" | "medium" | "high" | ""
+        workspaceDir: string;
+      };
+      ```
+
+      Initial state:
+      ```tsx
+      const [dashboard, setDashboard] = useState<DashboardForm>({
+        promptbookPath: "",
+        agent: "codex",
+        model: "",
+        effortLevel: "medium",
+        workspaceDir: "."
+      });
+      ```
+
+      ### 2. Fetch models on agent change
+
+      ```tsx
+      const [availableModels, setAvailableModels] = useState<IpcModelInfo[]>([]);
+
+      useEffect(() => {
+        invoke<IpcModelInfo[]>("list_agent_models", { agent: dashboard.agent })
+          .then((models) => {
+            setAvailableModels(models);
+            // auto-select first model if current selection not in list
+            const currentExists = models.some((m) => m.id === dashboard.model);
+            if (!currentExists) {
+              setDashboard((d) => ({ ...d, model: models[0]?.id ?? "" }));
+            }
+          })
+          .catch(() => setAvailableModels([]));
+      }, [dashboard.agent]);
+      ```
+
+      Import `IpcModelInfo` from `./ui-model`.
+
+      ### 3. Derive whether effort is supported
+
+      ```tsx
+      const selectedModelInfo = availableModels.find((m) => m.id === dashboard.model) ?? null;
+      const supportsEffort = selectedModelInfo?.supports_effort ?? false;
+      ```
+
+      ### 4. Add model + effort dropdowns to the form (after Agent dropdown)
+
+      ```tsx
+      {availableModels.length > 0 && (
+        <label>
+          Model
+          <select
+            value={dashboard.model}
+            onChange={(event) => updateDashboardField("model", event.target.value)}
+          >
+            {availableModels.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {supportsEffort && (
+        <label>
+          Effort level
+          <select
+            value={dashboard.effortLevel}
+            onChange={(event) => updateDashboardField("effortLevel", event.target.value)}
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      )}
+      ```
+
+      ### 5. Pass model + effortLevel to start_run invoke
+
+      In `handleStartRun`, extend the invoke call:
+      ```tsx
+      const runId = await invoke<number>("start_run", {
+        promptbookPath: dashboard.promptbookPath,
+        agent: dashboard.agent,
+        model: dashboard.model || null,
+        effortLevel: dashboard.effortLevel && supportsEffort ? dashboard.effortLevel : null,
+        workspaceDir: dashboard.workspaceDir
+      });
+      ```
+
+      ### 6. Update IpcRunRecord type in ui-model.ts
+
+      Add (already done in previous step, but confirm):
+      ```ts
+      model: string | null;
+      effort_level: string | null;
+      ```
+
+      ### 7. Update App.test.ts smoke test
+
+      Ensure the smoke test still passes — the new dropdowns are conditionally rendered
+      so they won't break the render test unless the mock IPC changes. Add a mock for
+      `list_agent_models` that returns `[]` (empty) in the test setup.
+
+      In `src/App.test.ts`, add to the `vi.mock("@tauri-apps/api/core", ...)` mock:
+      ```tsx
+      if (cmd === "list_agent_models") return Promise.resolve([]);
+      ```
+
+      ### 8. Add Vitest tests in ui-model.test.ts
+
+      Add tests for `IpcModelInfo` shape (type import test — just assert the type exists):
+      ```ts
+      it("IpcModelInfo type is exported", () => {
+        const model: import("./ui-model").IpcModelInfo = {
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          supports_effort: true,
+        };
+        expect(model.supports_effort).toBe(true);
+      });
+      ```
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "enhance-run-list"
+    title: "Runs panel: rich item details (name, dir, agent, model, effort, step, datetime)"
+    prompt: |
+      The left "Runs" panel currently shows only `{name} v{version}` and a
+      raw timestamp subtitle. Enhance each list item to show:
+      1. Promptbook name (short, no version)
+      2. Absolute workspace directory path
+      3. Agent + model + effort level (e.g. "claude / claude-sonnet-4-6 / medium")
+      4. Current step: step title + "Step N of M"
+      5. Status badge
+      6. Human-readable datetime instead of Unix timestamp
+
+      ## Implementation
+
+      ### 1. Extend RunManagerResult to store promptbook_path in runs table
+
+      The `metadata_json` already stores `promptbook_path`. Extract workspace_dir too.
+
+      In `run_manager.rs`, update `prepare_run` to also store `workspace_dir` in metadata:
+      ```rust
+      let metadata = serde_json::json!({
+          "promptbook_path": promptbook_path,
+          "workspace_dir": workspace_dir,
+          "model": model,
+          "effort_level": effort_level,
+      });
+      ```
+
+      ### 2. Extend `parse_model_effort_from_metadata` in ipc.rs
+
+      Rename to `parse_run_metadata` and return a struct:
+      ```rust
+      struct RunMetadata {
+          model: Option<String>,
+          effort_level: Option<String>,
+          workspace_dir: Option<String>,
+          promptbook_path: Option<String>,
+      }
+
+      fn parse_run_metadata(metadata: Option<&str>) -> RunMetadata {
+          let Some(json) = metadata else { return RunMetadata { .. Default::default() } };
+          let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+              return RunMetadata { .. Default::default() };
+          };
+          RunMetadata {
+              model: value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              effort_level: value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              workspace_dir: value.get("workspace_dir").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              promptbook_path: value.get("promptbook_path").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+          }
+      }
+      ```
+
+      Implement `Default` for `RunMetadata`:
+      ```rust
+      impl Default for RunMetadata {
+          fn default() -> Self {
+              Self { model: None, effort_level: None, workspace_dir: None, promptbook_path: None }
+          }
+      }
+      ```
+
+      ### 3. Add fields to IpcRunRecord
+
+      Add to `IpcRunRecord` in ipc.rs (and mirror in ui-model.ts):
+      ```rust
+      pub workspace_dir: Option<String>,
+      ```
+
+      Update `From<RunRecord> for IpcRunRecord` to populate it from metadata.
+
+      ### 4. Update `createRunListViewModel` in ui-model.ts
+
+      Replace the current minimal view with a richer one.
+      Also import a helper to format ISO/Unix timestamps as human-readable:
+
+      ```ts
+      function formatDateTime(ts: string | null): string {
+        if (!ts) return "—";
+        // ts is either a Unix epoch string like "1700000000.000Z" or an ISO string
+        let date: Date;
+        if (/^\d+\.\d+Z$/.test(ts)) {
+          date = new Date(parseFloat(ts) * 1000);
+        } else {
+          date = new Date(ts);
+        }
+        if (isNaN(date.getTime())) return ts;
+        return date.toLocaleString(undefined, {
+          year: "numeric", month: "short", day: "numeric",
+          hour: "2-digit", minute: "2-digit"
+        });
+      }
+      ```
+
+      Update `RunListItemViewModel`:
+      ```ts
+      export type RunListItemViewModel = {
+        id: number;
+        title: string;
+        subtitle: string;
+        agentLine: string;       // "claude / claude-sonnet-4-6 / medium"
+        workspaceLine: string;   // absolute dir or "."
+        status: string;
+        startedAt: string;       // formatted human datetime
+      };
+      ```
+
+      Update `createRunListViewModel`:
+      ```ts
+      export function createRunListViewModel(runs: IpcRunRecord[]): RunListItemViewModel[] {
+        return [...runs]
+          .sort((l, r) => r.started_at.localeCompare(l.started_at))
+          .map((run) => {
+            const agent = run.agent_default ?? "—";
+            const model = run.model ?? "";
+            const effort = run.effort_level ?? "";
+            const agentParts = [agent, model, effort].filter(Boolean);
+            return {
+              id: run.id,
+              title: run.promptbook_name,
+              subtitle: `v${run.promptbook_version}`,
+              agentLine: agentParts.join(" / "),
+              workspaceLine: run.workspace_dir ?? ".",
+              status: run.status,
+              startedAt: formatDateTime(run.started_at),
+            };
+          });
+      }
+      ```
+
+      ### 5. Also expose current active step in list items
+
+      To show the current step we need step data from runs. We can use the
+      `IpcRunDetail` we already have for the selected run, or we can add a
+      lightweight step summary to `IpcRunRecord`.
+
+      For now, expose the steps from the full run detail on the selected run,
+      and for other (non-selected) runs just show "N steps" from list data.
+
+      Add to `IpcRunRecord`:
+      ```rust
+      pub step_count: i64,           // total steps persisted so far
+      pub current_step_title: Option<String>, // title of the last running step
+      ```
+
+      In `list_runs`, query step counts per run:
+      ```rust
+      // After fetching runs, for each run fetch step summary
+      // (or use a SQL GROUP BY subquery)
+      ```
+
+      Alternatively, use a SQL query with a left join:
+      ```sql
+      SELECT r.*, 
+             COUNT(s.id) AS step_count,
+             (SELECT s2.title FROM steps s2 WHERE s2.run_id = r.id AND s2.status = 'running' ORDER BY s2.id DESC LIMIT 1) AS current_step_title
+      FROM runs r
+      LEFT JOIN steps s ON s.run_id = r.id
+      GROUP BY r.id
+      ORDER BY r.started_at DESC, r.id DESC
+      ```
+
+      Update `StorageRepository::list_runs` to execute this query and return
+      the extended data. Add `step_count: i64` and `current_step_title: Option<String>`
+      to `RunRecord`.
+
+      Update `IpcRunRecord` and the `From` conversion accordingly.
+
+      Update `RunListItemViewModel` to include `stepInfo: string` (e.g. "Step 2 of 5").
+
+      Update `createRunListViewModel` to compute `stepInfo`.
+
+      Add `step_count: number` and `current_step_title: string | null` to `IpcRunRecord`
+      in ui-model.ts.
+
+      ### 6. Update the run-list JSX in App.tsx
+
+      Replace the simple `<strong>{run.title}</strong><span>{run.subtitle}</span>` with:
+      ```tsx
+      <button className={`run-item ${run.status} ${selectedRunId === run.id ? "is-selected" : ""}`}
+              onClick={() => setSelectedRunId(run.id)}>
+        <div className="run-item-header">
+          <strong className="run-name">{run.title}</strong>
+          <span className={`status-pill ${run.status}`}>{run.status}</span>
+        </div>
+        <div className="run-item-meta">
+          <span className="run-agent">{run.agentLine}</span>
+        </div>
+        <div className="run-item-meta">
+          <span className="run-workspace" title={run.workspaceLine}>{run.workspaceLine}</span>
+        </div>
+        {run.stepInfo && (
+          <div className="run-item-meta">
+            <span className="run-step">{run.stepInfo}</span>
+          </div>
+        )}
+        <div className="run-item-footer">
+          <span className="run-started">{run.startedAt}</span>
+        </div>
+      </button>
+      ```
+
+      ### 7. Update tests
+
+      Update `createRunListViewModel` tests in `ui-model.test.ts` to reflect new shape.
+      Update App.test.ts mock data to include the new fields.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "per-step-progress"
+    title: "Run Detail: per-step clickable tabs, live progress + final output per step"
+    prompt: |
+      Currently the Run Detail section shows all log lines from all steps in a single
+      "Live Progress" pane, and Final Output is effectively broken (the step output is
+      also just stdout mixed with progress).
+
+      This step rewires the UI so:
+      - The step list is clickable — clicking a step makes it "active" and shows
+        its own Live Progress and Final Output tabs.
+      - The currently running step is automatically made active.
+      - The next pending step is labelled "next".
+      - When the active step completes, the new running step automatically becomes active.
+      - Live Progress shows only log lines for the active step.
+      - Final Output shows the output record for the active step (from `outputs` table).
+      - The backend already splits output: stdout lines are stored in `outputs` as "Final",
+        all lines (stdout+stderr) in `logs` as "Live Progress". We just need the UI to use them correctly.
+
+      ## Implementation
+
+      ### 1. Understand existing data model
+
+      In `IpcRunDetail`:
+      - `logs`: all lines per step (step_id field identifies which step)
+      - `outputs`: final output per step (one per step, populated when step finishes)
+      - `steps`: step records with status
+
+      ### 2. Update `RunDetailViewModel` in ui-model.ts
+
+      Replace the current flat `liveLines` + `outputOptions` with a per-step model:
+
+      ```ts
+      export type StepViewModel = {
+        stepId: string;
+        title: string;
+        status: string;           // "pending" | "running" | "success" | "failure" | "next"
+        isActive: boolean;
+        liveLines: string[];      // log lines for this step only
+        finalOutput: string | null; // output content or null if not done
+      };
+
+      export type RunDetailViewModel = {
+        liveProgressTitle: "Live Progress";
+        finalOutputTitle: "Final Output";
+        stepRows: StepViewModel[];
+        activeStep: StepViewModel | null;
+        // Legacy fields removed — use activeStep.liveLines / activeStep.finalOutput
+      };
+      ```
+
+      Update `createRunDetailViewModel`:
+      ```ts
+      export function createRunDetailViewModel(
+        detail: IpcRunDetail | null,
+        activeStepId: string | null
+      ): RunDetailViewModel {
+        if (!detail) {
+          return { liveProgressTitle: "Live Progress", finalOutputTitle: "Final Output", stepRows: [], activeStep: null };
+        }
+
+        const logsByStep = new Map<string, IpcLogRecord[]>();
+        for (const log of detail.logs) {
+          const arr = logsByStep.get(log.step_id) ?? [];
+          arr.push(log);
+          logsByStep.set(log.step_id, arr);
+        }
+        const outputByStep = new Map(detail.outputs.map((o) => [o.step_id, o]));
+
+        // Determine which step is "next" (first pending step after all running/done steps)
+        const runningIdx = detail.steps.findIndex((s) => s.status === "running");
+        const nextStepId = runningIdx >= 0 && runningIdx + 1 < detail.steps.length
+          ? detail.steps[runningIdx + 1].step_id
+          : null;
+
+        const stepRows: StepViewModel[] = detail.steps.map((step, idx) => {
+          const isNext = step.step_id === nextStepId;
+          const displayStatus = isNext ? "next" : step.status;
+          const logs = logsByStep.get(step.step_id) ?? [];
+          const output = outputByStep.get(step.step_id);
+          return {
+            stepId: step.step_id,
+            title: step.title,
+            status: displayStatus,
+            isActive: step.step_id === activeStepId,
+            liveLines: logs.map((l) => `[${l.stream}] ${l.line}`),
+            finalOutput: output?.content ?? null,
+          };
+        });
+
+        const activeStep = stepRows.find((s) => s.isActive) ?? stepRows[0] ?? null;
+
+        return {
+          liveProgressTitle: "Live Progress",
+          finalOutputTitle: "Final Output",
+          stepRows,
+          activeStep,
+        };
+      }
+      ```
+
+      ### 3. Update `applyRunEvent` in ui-model.ts
+
+      When a `step_started` event arrives for a step NOT already in the list,
+      still add it (as before). When it IS a new step starting, the active step
+      should auto-switch. We handle this in the component, not here.
+
+      ### 4. Update App.tsx state and logic
+
+      a. Replace `selectedOutputStepId` with `activeStepId`:
+      ```tsx
+      const [activeStepId, setActiveStepId] = useState<string | null>(null);
+      ```
+
+      b. Auto-update `activeStepId` when a new step starts:
+      In the `run_event` listener, when `runEvent.type === "step_started"`:
+      ```tsx
+      if (runEvent.type === "step_started" && runEvent.step_id) {
+        setActiveStepId(runEvent.step_id);
+      }
+      ```
+
+      c. Update `detailViewModel` derivation:
+      ```tsx
+      const detailViewModel = useMemo(
+        () => createRunDetailViewModel(runDetail, activeStepId),
+        [runDetail, activeStepId]
+      );
+      ```
+
+      d. When `runDetail` changes (new run selected), auto-select the
+      running step (or first step):
+      ```tsx
+      useEffect(() => {
+        if (!runDetail) {
+          setActiveStepId(null);
+          return;
+        }
+        const runningStep = runDetail.steps.find((s) => s.status === "running");
+        const fallback = runDetail.steps[0];
+        setActiveStepId(runningStep?.step_id ?? fallback?.step_id ?? null);
+      }, [runDetail?.run.id]);
+      ```
+      Note: depend on `runDetail?.run.id` not `runDetail` to avoid re-triggering
+      on every log line update.
+
+      ### 5. Update the step list JSX in App.tsx
+
+      Make each step row clickable, show status labels including "next":
+      ```tsx
+      <ul className="step-list">
+        {detailViewModel.stepRows.length === 0 ? (
+          <li className="empty-state">No steps recorded yet.</li>
+        ) : (
+          detailViewModel.stepRows.map((step) => (
+            <li key={step.stepId} className={`step-row ${step.isActive ? "is-active" : ""}`}>
+              <button
+                type="button"
+                className="step-row-btn"
+                onClick={() => setActiveStepId(step.stepId)}
+              >
+                <span className="step-title">{step.title}</span>
+                <span className={`status-pill ${step.status}`}>{step.status}</span>
+              </button>
+            </li>
+          ))
+        )}
+      </ul>
+      ```
+
+      ### 6. Update the split panes in App.tsx
+
+      Replace the current flat live/final panes with per-step content:
+      ```tsx
+      {detailViewModel.activeStep ? (
+        <>
+          <div className="split-tabs" role="tablist" aria-label="run detail panes">
+            <button type="button" role="tab"
+              aria-selected={splitPane === "live"} className={splitPane === "live" ? "is-active" : ""}
+              onClick={() => setSplitPane("live")}>
+              {detailViewModel.liveProgressTitle}
+            </button>
+            <button type="button" role="tab"
+              aria-selected={splitPane === "final"} className={splitPane === "final" ? "is-active" : ""}
+              onClick={() => setSplitPane("final")}>
+              {detailViewModel.finalOutputTitle}
+            </button>
+          </div>
+
+          <div className={`split-pane-grid ${splitPane === "live" ? "show-live" : "show-final"}`}>
+            <section className="pane live-pane">
+              <h3>{detailViewModel.liveProgressTitle} — {detailViewModel.activeStep.title}</h3>
+              {detailViewModel.activeStep.liveLines.length === 0 ? (
+                <p className="empty-state">No live progress yet.</p>
+              ) : (
+                <pre>{detailViewModel.activeStep.liveLines.join("\n")}</pre>
+              )}
+            </section>
+
+            <section className="pane final-pane">
+              <h3>{detailViewModel.finalOutputTitle} — {detailViewModel.activeStep.title}</h3>
+              {detailViewModel.activeStep.finalOutput === null ? (
+                <p className="empty-state">
+                  {detailViewModel.activeStep.status === "running"
+                    ? "Step in progress — final output will appear when done."
+                    : "No final output for this step."}
+                </p>
+              ) : (
+                <pre>{detailViewModel.activeStep.finalOutput}</pre>
+              )}
+            </section>
+          </div>
+        </>
+      ) : (
+        <p className="empty-state">Select a step to view its output.</p>
+      )}
+      ```
+
+      ### 7. Update tests
+
+      Update `createRunDetailViewModel` tests in `ui-model.test.ts`:
+      - Pass `activeStepId` (second param) instead of `selectedOutputStepId`.
+      - Assert `activeStep` is set and has `liveLines` / `finalOutput`.
+      - Assert `stepRows[N].status === "next"` for the step after the running one.
+      - Remove tests that reference old `liveLines` / `outputOptions` shape.
+
+      Update `App.test.ts`:
+      - Ensure the smoke test still passes with the new JSX structure.
+      - Update mock IPC responses to include step data.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "stop-resume"
+    title: "Stop and Resume: pause a running step, resume from last stopped step"
+    prompt: |
+      Add stop and resume capabilities to running promptbook runs.
+
+      ## Goal
+      - In Run Detail: when a step is running, show a "Stop" button.
+      - When clicked, it cancels the current run (existing `cancel_run` IPC).
+      - When a run is stopped/failed, show a "Resume from step N" button that starts
+        a new run beginning at the first non-success step.
+      - The new resumed run appears in the Runs list.
+
+      ## Implementation
+
+      ### 1. Backend: `resume_run` IPC command
+
+      Add a new command to `ipc.rs`:
+      ```rust
+      #[tauri::command]
+      pub fn resume_run(
+          state: tauri::State<'_, IpcState>,
+          original_run_id: i64,
+      ) -> IpcResult<i64> {
+          // Load the original run to get promptbook path and agent
+          let repo = StorageRepository::open_in_app_data_dir(&state.resolve_app_data_dir())
+              .map_err(|err| err.to_string())?;
+          let detail = repo.get_run_detail(original_run_id)
+              .map_err(|err| err.to_string())?
+              .ok_or_else(|| format!("run {original_run_id} not found"))?;
+
+          let metadata = parse_run_metadata(detail.run.metadata_json.as_deref());
+          let promptbook_path = metadata.promptbook_path
+              .ok_or_else(|| "original run has no promptbook_path in metadata".to_string())?;
+          let workspace_dir = metadata.workspace_dir.unwrap_or_else(|| ".".to_string());
+          let agent = detail.run.agent_default.clone();
+          let model = metadata.model.clone();
+          let effort_level = metadata.effort_level.clone();
+
+          // Find the first non-success step to resume from
+          let resume_from_step = detail.steps.iter()
+              .find(|s| s.status != "success")
+              .map(|s| s.step_id.clone());
+
+          let emitter = Arc::clone(&state.event_emitter);
+          let callback = Arc::new(move |event: RunEvent| {
+              let _ = emitter.emit_run_event(map_run_event(event));
+          });
+
+          start_run_background_from(
+              &promptbook_path,
+              agent.as_deref(),
+              &workspace_dir,
+              model.as_deref(),
+              effort_level.as_deref(),
+              resume_from_step.as_deref(),
+              Some(callback),
+          ).map_err(|err| err.to_string())
+      }
+      ```
+
+      ### 2. Backend: `start_run_background_from` in run_manager.rs
+
+      Add a new public function that accepts an optional `from_step_id`:
+      ```rust
+      pub fn start_run_background_from(
+          promptbook_path: &str,
+          agent: Option<&str>,
+          workspace_dir: &str,
+          model: Option<&str>,
+          effort_level: Option<&str>,
+          from_step_id: Option<&str>,
+          event_callback: Option<RunEventCallback>,
+      ) -> RunManagerResult<i64> {
+          let prepared = prepare_run(promptbook_path, agent, workspace_dir, model, effort_level)?;
+          // Filter steps if from_step_id is given
+          // Store from_step_id in PreparedRun and use in execute_steps
+          let run_id = prepared.run_id;
+          register_run_handle(run_id)?;
+          let app_data_dir = prepared.app_data_dir.clone();
+          let from_step = from_step_id.map(ToOwned::to_owned);
+          let join_handle = run_runtime().spawn_blocking(move || {
+              let result = execute_prepared_run_from(prepared, from_step.as_deref(), event_callback);
+              if result.is_err() {
+                  let _ = unregister_run_handle(run_id);
+                  if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir) {
+                      let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+                  }
+              }
+          });
+          set_run_task(run_id, join_handle)?;
+          Ok(run_id)
+      }
+      ```
+
+      Add `execute_prepared_run_from` which calls `execute_steps` with a
+      `from_step_id` filter:
+      ```rust
+      fn execute_prepared_run_from(
+          prepared: PreparedRun,
+          from_step_id: Option<&str>,
+          event_callback: Option<RunEventCallback>,
+      ) -> RunManagerResult<()> {
+          // same as execute_prepared_run but passes from_step_id to execute_steps
+          // ...
+      }
+      ```
+
+      Update `execute_steps` to accept `from_step_id: Option<&str>` and skip
+      steps before the matching step:
+      ```rust
+      fn execute_steps(
+          repo: &StorageRepository,
+          run_id: i64,
+          promptbook: &PromptbookFile,
+          selected_agent: Option<&str>,
+          workspace_path: &Path,
+          app_data_dir: &Path,
+          from_step_id: Option<&str>,
+          event_callback: Option<&RunEventCallback>,
+      ) -> RunManagerResult<String> {
+          let start_idx = match from_step_id {
+              None => 0,
+              Some(step_id) => promptbook.steps.iter().position(|s| s.id == step_id).unwrap_or(0),
+          };
+          // iterate from start_idx
+          for step in &promptbook.steps[start_idx..] { ... }
+      }
+      ```
+
+      ### 3. Register `resume_run` in lib.rs
+
+      Add `ipc::resume_run` to `tauri::generate_handler![]`.
+
+      ### 4. Frontend: Stop button
+
+      In App.tsx, in the Run Detail section header, show a Stop button when the
+      run status is "running":
+      ```tsx
+      {runDetail && runDetail.run.status === "running" && (
+        <button
+          type="button"
+          className="danger-action"
+          onClick={() => void handleStopRun()}
+        >
+          Stop
+        </button>
+      )}
+      ```
+
+      Add handler:
+      ```tsx
+      async function handleStopRun(): Promise<void> {
+        if (selectedRunId === null) return;
+        try {
+          await invoke("cancel_run", { runId: selectedRunId });
+          await loadRuns();
+        } catch (error) {
+          pushErrorToast(`Failed to stop run: ${getErrorMessage(error)}`);
+        }
+      }
+      ```
+
+      ### 5. Frontend: Resume button
+
+      Show a Resume button when the run status is "failure" or "cancelled":
+      ```tsx
+      {runDetail && (runDetail.run.status === "failure") && (
+        <button
+          type="button"
+          className="secondary-action"
+          onClick={() => void handleResumeRun()}
+        >
+          Resume from failed step
+        </button>
+      )}
+      ```
+
+      Add handler:
+      ```tsx
+      async function handleResumeRun(): Promise<void> {
+        if (selectedRunId === null) return;
+        try {
+          const newRunId = await invoke<number>("resume_run", { originalRunId: selectedRunId });
+          await loadRuns();
+          setSelectedRunId(newRunId);
+        } catch (error) {
+          pushErrorToast(`Failed to resume run: ${getErrorMessage(error)}`);
+        }
+      }
+      ```
+
+      ### 6. Add TypeScript type for IpcRunRecord `status` in ui-model.ts
+
+      Update `createRunListViewModel` status handling to include "failure" and
+      ensure the status-pill CSS class still works.
+
+      ### 7. Tests
+
+      Add a Rust test for `start_run_background_from`:
+      ```rust
+      #[test]
+      fn resume_run_from_step_skips_earlier_steps() {
+          // Write a 3-step promptbook, resume from step-2
+          // Assert only 2 steps are persisted (step-2, step-3)
+          // Assert run status is success
+      }
+      ```
+
+      Add a Vitest test in ui-model.test.ts that verifies `createRunDetailViewModel`
+      returns the right `stepRows[0].status === "next"` when step 0 is running.
+
+      Add mock for `resume_run` and `cancel_run` in App.test.ts.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  - id: "final-verify"
+    title: "Final verification: full test suite green + lint clean"
+    prompt: |
+      Run the complete test suite and lint checks across the entire monorepo.
+      Fix any remaining issues. Produce a summary TEST_REPORT.md at the repo root.
+
+      ## Steps
+
+      1. Run `pnpm test` — fix any failing Vitest tests.
+      2. Run `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — fix any failing Rust tests.
+      3. Run `pnpm lint` — fix any ESLint warnings or errors.
+      4. Confirm `pnpm build` succeeds (Tauri release build) — or at minimum `vite build` for the frontend.
+      5. Update `TEST_REPORT.md` at the repo root with:
+         - Summary of what was implemented in this session
+         - Final test counts (TS + Rust)
+         - Verification results
+         - Any known limitations or follow-up items
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm lint"
+      - "test -f TEST_REPORT.md"

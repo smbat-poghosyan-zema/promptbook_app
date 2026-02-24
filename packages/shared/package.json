@@ -10,10 +10,15 @@
     }
   },
   "scripts": {
-    "lint": "node ../../scripts/eslint-shim.mjs",
-    "test": "node ./scripts/vitest-shim.mjs run"
+    "lint": "eslint . --max-warnings=0",
+    "test": "vitest run"
   },
   "dependencies": {
-    "zod": "workspace:*"
+    "yaml": "^2.7.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
   }
 }

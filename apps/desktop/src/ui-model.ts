@@ -14,10 +14,17 @@ export type IpcRunRecord = {
   current_step_title: string | null;
 };
 
+export type EffortLevelInfo = {
+  id: string;
+  name: string;
+};
+
 export type IpcModelInfo = {
   id: string;
   name: string;
-  supports_effort: boolean;
+  effort_levels: EffortLevelInfo[];
+  default_effort: string | null;
+  is_default: boolean;
 };
 
 export type IpcStepRecord = {

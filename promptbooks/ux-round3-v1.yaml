@@ -1,0 +1,1076 @@
+schema_version: "promptbook/v1"
+name: "ux-round3"
+version: "1.0.0"
+description: >
+  Round-3 UX improvements: inline agent/model/effort row, fully dynamic models
+  from `openclaw models --status-json`, expanded step detail with prompts and
+  player buttons, and in-place resume (no duplicate run entries).
+
+defaults:
+  agent: "claude"
+  workspace_dir: "."
+  approval_mode: "auto"
+  timeout_minutes: 60
+
+global_rules:
+  - "Workspace is the repo root passed at runtime."
+  - "After each step: run 'pnpm test' and 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' — both must be green."
+  - "Run 'pnpm lint' — zero errors required."
+  - "Commit after each step: 'ux3/<step-id>: <step-title>'."
+  - "Never hardcode model lists. All model data must come from runtime sources."
+  - "Update tests alongside implementation. Do NOT break existing tests."
+
+steps:
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "inline-agent-row"
+    title: "Agent / Model / Effort on one horizontal row"
+    prompt: |
+      ## Problem
+      The Agent, Model, and Effort dropdowns are stacked vertically — one label
+      under another — taking up too much vertical space in the dashboard.
+
+      ## Goal
+      Display all three selectors on **one horizontal row**, with equal-width
+      columns and reasonable gap. Labels sit above each select, grouped tightly.
+      The row should collapse gracefully below 800px (fall back to stacked layout).
+
+      ## Implementation
+
+      ### 1. App.tsx — wrap the three selectors in a `agent-model-effort-row` div
+
+      Find the three label elements for Agent, Model (conditional), and Effort level
+      (conditional) and wrap them together:
+
+      ```tsx
+      <div className="agent-model-effort-row">
+        {/* Agent */}
+        <label className="ame-field">
+          Agent
+          <select
+            value={dashboard.agent}
+            onChange={(event) => updateDashboardField("agent", event.target.value)}
+          >
+            {AGENT_OPTIONS.map((agent) => (
+              <option key={agent} value={agent}>{agent}</option>
+            ))}
+          </select>
+        </label>
+
+        {/* Model — always reserve space even if empty, to avoid layout jump */}
+        <label className="ame-field">
+          Model
+          <select
+            value={dashboard.model}
+            onChange={(event) => updateDashboardField("model", event.target.value)}
+            disabled={availableModels.length === 0}
+          >
+            {availableModels.length === 0 ? (
+              <option value="">— no models —</option>
+            ) : (
+              availableModels.map((model) => (
+                <option key={model.id} value={model.id}>{model.name}</option>
+              ))
+            )}
+          </select>
+        </label>
+
+        {/* Effort — always render, disable when not supported */}
+        <label className="ame-field">
+          Effort
+          <select
+            value={dashboard.effortLevel}
+            onChange={(event) => updateDashboardField("effortLevel", event.target.value)}
+            disabled={!supportsEffort}
+          >
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+      </div>
+      ```
+
+      Remove the old separate conditional `{availableModels.length > 0 && ...}` and
+      `{supportsEffort && ...}` label blocks — they are replaced by the row above.
+
+      ### 2. styles.css — add `.agent-model-effort-row` and `.ame-field`
+
+      ```css
+      /* Agent / Model / Effort — horizontal row */
+      .agent-model-effort-row {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.75rem;
+        align-items: start;
+      }
+
+      .ame-field {
+        display: grid;
+        gap: 0.35rem;
+        font-size: 0.95rem;
+      }
+
+      .ame-field select {
+        width: 100%;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0.45rem 0.6rem;
+        background: #fff;
+      }
+
+      .ame-field select:disabled {
+        opacity: 0.5;
+        background: #f1f5f9;
+        cursor: not-allowed;
+      }
+
+      @media (max-width: 800px) {
+        .agent-model-effort-row {
+          grid-template-columns: 1fr;
+        }
+      }
+      ```
+
+      ### 3. Tests — App.test.ts
+
+      Update the smoke test mock so that `list_agent_models` returns at least one
+      model (so the Model dropdown renders with a real option, not "— no models —"):
+      ```ts
+      if (cmd === "list_agent_models") return Promise.resolve([
+        { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", supports_effort: true }
+      ]);
+      ```
+
+      Ensure the smoke test renders without error and that the three selectors are
+      present in the DOM.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "dynamic-models"
+    title: "Dynamic model list from openclaw models --status-json (nothing hardcoded)"
+    prompt: |
+      ## Problem
+      Models are currently hardcoded in `agent_adapter.rs`. The list is wrong
+      and will go stale. The user has `openclaw` CLI which returns the full list
+      of configured models via `openclaw models --status-json` — we should use
+      that as the authoritative source.
+
+      ## Background: openclaw JSON output format
+      Running `openclaw models --status-json` returns JSON with this structure:
+      ```json
+      {
+        "allowed": [
+          "anthropic/claude-sonnet-4-6",
+          "anthropic/claude-opus-4-6",
+          "openai/gpt-5.3-codex",
+          "openai/gpt-5.3-codex-spark",
+          "openai-codex/gpt-5.3-codex-spark",
+          "openai-codex/gpt-5.3-codex",
+          "google-antigravity/claude-opus-4-6-thinking",
+          ...
+        ]
+      }
+      ```
+
+      The format is `<provider>/<model-id>`. Provider → agent mapping:
+      | Provider prefix      | Agent    | CLI model flag value |
+      |----------------------|----------|----------------------|
+      | `anthropic`          | `claude` | model after `/`       |
+      | `openai`             | `codex`  | model after `/`       |
+      | `openai-codex`       | `codex`  | model after `/`       |
+      | anything else        | (skip)   | —                    |
+
+      `supports_effort`:
+      - `anthropic/*` → `true` (all Claude models support extended thinking)
+      - `openai/*` and `openai-codex/*` → `true` (Codex CLI uses `model_reasoning_effort`)
+      - others → `false`
+
+      Display name: replace `-` with space and capitalize first letter of each word.
+      E.g. `gpt-5.3-codex-spark` → `GPT-5.3 Codex Spark`.
+
+      ## Implementation
+
+      ### 1. New IPC command `list_agent_models` in ipc.rs (replace static version)
+
+      Replace the existing `list_agent_models` command body entirely:
+
+      ```rust
+      #[tauri::command]
+      pub fn list_agent_models(agent: String) -> IpcResult<Vec<IpcModelInfo>> {
+          let output = std::process::Command::new("openclaw")
+              .args(["models", "--status-json"])
+              .output()
+              .map_err(|err| format!("openclaw not found: {err}"))?;
+
+          if !output.status.success() {
+              return Err(format!(
+                  "openclaw models failed: {}",
+                  String::from_utf8_lossy(&output.stderr)
+              ));
+          }
+
+          let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+              .map_err(|err| format!("failed to parse openclaw output: {err}"))?;
+
+          let allowed = json
+              .get("allowed")
+              .and_then(|v| v.as_array())
+              .ok_or_else(|| "openclaw output missing 'allowed' field".to_string())?;
+
+          let models: Vec<IpcModelInfo> = allowed
+              .iter()
+              .filter_map(|v| v.as_str())
+              .filter_map(|full_id| {
+                  let (provider, model_id) = full_id.split_once('/')?;
+                  let matches_agent = match agent.as_str() {
+                      "claude" => provider == "anthropic",
+                      "codex"  => provider == "openai" || provider == "openai-codex",
+                      _        => false,
+                  };
+                  if !matches_agent {
+                      return None;
+                  }
+                  let supports_effort = matches!(provider, "anthropic" | "openai" | "openai-codex");
+                  let name = pretty_model_name(model_id);
+                  Some(IpcModelInfo {
+                      id: model_id.to_string(),
+                      name,
+                      supports_effort,
+                  })
+              })
+              // Deduplicate by id (openai/ and openai-codex/ may repeat same model)
+              .fold(Vec::new(), |mut acc, m| {
+                  if !acc.iter().any(|x: &IpcModelInfo| x.id == m.id) {
+                      acc.push(m);
+                  }
+                  acc
+              });
+
+          Ok(models)
+      }
+
+      fn pretty_model_name(model_id: &str) -> String {
+          model_id
+              .split('-')
+              .map(|part| {
+                  let mut chars = part.chars();
+                  match chars.next() {
+                      None => String::new(),
+                      Some(first) => {
+                          if first.is_ascii_digit() {
+                              part.to_string()
+                          } else {
+                              let upper = first.to_uppercase().collect::<String>();
+                              upper + chars.as_str()
+                          }
+                      }
+                  }
+              })
+              .collect::<Vec<_>>()
+              .join(" ")
+      }
+      ```
+
+      ### 2. Remove old static `models_for_agent` from agent_adapter.rs
+
+      Delete the `models_for_agent` function and the `ModelInfo` struct from
+      `agent_adapter.rs` — they are no longer needed (the IPC layer fetches live data).
+      Remove any imports/uses of those items elsewhere.
+
+      ### 3. Update CodexAdapter::build_command to handle effort correctly
+
+      Codex CLI uses `-c model_reasoning_effort="<level>"` for effort.
+      Verify (and fix if needed) the current CodexAdapter::build_command:
+      - `--model <model_id>` appears BEFORE the prompt argument
+      - `-c model_reasoning_effort="<level>"` is added when effort is set, also before prompt
+
+      The final args order for codex exec should be:
+      ```
+      ["exec", "--full-auto", "--sandbox", "workspace-write",
+       "--model", model_id,          // if model set
+       "-c", "model_reasoning_effort=\"medium\"",  // if effort set
+       instruction_prompt]
+      ```
+
+      ### 4. Update tests in agent_adapter.rs
+
+      Remove `models_for_agent_returns_*` tests since that function is deleted.
+      Add a test `pretty_model_name_formats_correctly` that tests the
+      `pretty_model_name` helper:
+      - `pretty_model_name("claude-sonnet-4-6")` returns `"Claude Sonnet 4 6"`
+        (or similar — adjust assertion to match actual output).
+
+      The key test: `list_agent_models` calls `openclaw` — in Rust unit tests
+      this would actually invoke the binary. Write it as an integration test
+      (or simply note it's covered by the running app).
+      Keep the existing codex/claude adapter command-building tests passing.
+
+      ### 5. Update ipc.rs tests
+
+      Update `list_agent_models_returns_claude_models_with_effort_support` to
+      reflect that the function now calls `openclaw`. In CI without openclaw
+      available, this test would fail — so either:
+      a) Delete it (covered by integration/app test).
+      b) Or skip it with `#[ignore]` and add `// requires openclaw CLI`.
+
+      Use option (a) — delete the unit test for `list_agent_models` since the
+      live binary call can't be unit-tested without mocking. The implementation
+      is verified by running the app.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-detail-expand"
+    title: "Run Detail: all steps visible, expandable prompts, player action buttons"
+    prompt: |
+      ## Problem
+      1. Run Detail only shows steps that have STARTED. Steps still in queue
+         ("pending") are invisible until execution reaches them.
+      2. Steps can't be expanded to show the original prompt.
+      3. The stop/resume buttons are not styled like media player buttons.
+
+      ## Goals
+      1. Show ALL steps from the moment a run is created (pending/queued steps visible).
+      2. Clicking a step row expands it to reveal the step's prompt text.
+      3. Left side of each step row has a **player button**:
+         - Running step → ⏹ square (Stop) button — clicking cancels the run.
+         - Stopped/failed step (and run is not currently running) → ▶ triangle
+           (Resume) — clicking resumes the run in-place.
+         - Pending/queued step (not yet started) → ▶ triangle, greyed out, disabled.
+         - Succeeded step → ✓ check, no action, non-interactive.
+      4. The step title row + status remain (unchanged from round-2 design).
+
+      ## Implementation
+
+      ### Part A: Backend — persist all steps upfront as "pending"
+
+      #### A1. DB migration: add `prompt` column to steps table
+
+      In `StorageRepository::migrate` in `lib.rs`, after the existing table creation,
+      add this line to the migration batch:
+      ```sql
+      ALTER TABLE steps ADD COLUMN prompt TEXT;
+      ```
+      **Important**: SQLite `ALTER TABLE ADD COLUMN` fails if the column already
+      exists. Wrap it in a separate `execute_batch` that ignores errors:
+      ```rust
+      // Best-effort migration: add prompt column if missing
+      let _ = conn.execute_batch("ALTER TABLE steps ADD COLUMN prompt TEXT;");
+      ```
+      Place this AFTER the main `execute_batch` that creates tables.
+
+      #### A2. Update `NewStep` and `StepRecord` in lib.rs
+
+      Add `prompt: Option<String>` to both `NewStep` and `StepRecord`.
+
+      Update `create_step` INSERT to include the `prompt` column:
+      ```sql
+      INSERT INTO steps (run_id, step_id, title, status, started_at, finished_at, prompt)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      ```
+
+      Update the `get_run_detail` steps SELECT to include `prompt`:
+      ```sql
+      SELECT id, run_id, step_id, title, status, started_at, finished_at, prompt
+      FROM steps WHERE run_id = ?1 ORDER BY id ASC
+      ```
+      Map `prompt: row.get(7)?`.
+
+      #### A3. Pre-create all steps as "pending" in `prepare_run` in run_manager.rs
+
+      After creating the run record, immediately create all steps with status "pending":
+      ```rust
+      for step in &promptbook.steps {
+          repo.create_step(&NewStep {
+              run_id,
+              step_id: step.id.clone(),
+              title: step.title.clone(),
+              status: "pending".to_string(),
+              started_at: None,
+              finished_at: None,
+              prompt: Some(step.prompt.clone()),
+          })?;
+      }
+      ```
+
+      #### A4. Update `execute_steps` in run_manager.rs
+
+      When a step starts, instead of calling `repo.create_step`, call
+      `repo.update_step_status` to change it from "pending" to "running":
+      ```rust
+      // The step record was pre-created in prepare_run; just update its status
+      repo.update_step_status(run_id, &step.id, "running", None)?;
+      // Also set started_at:
+      repo.update_step_started_at(run_id, &step.id, &step_started_at)?;
+      ```
+
+      Add `update_step_started_at` method to `StorageRepository`:
+      ```rust
+      pub fn update_step_started_at(
+          &self,
+          run_id: i64,
+          step_id: &str,
+          started_at: &str,
+      ) -> StorageResult<()> {
+          let _guard = Self::write_lock()
+              .lock()
+              .map_err(|_| StorageError::Sql(rusqlite::Error::InvalidQuery))?;
+          self.conn.execute(
+              "UPDATE steps SET started_at = ?1 WHERE run_id = ?2 AND step_id = ?3",
+              rusqlite::params![started_at, run_id, step_id],
+          )?;
+          Ok(())
+      }
+      ```
+
+      For `start_run_background_from` (used by resume), which starts from a specific
+      step: those steps may already have records from the first run. For the from_step
+      and beyond, reset them to "pending" before starting:
+      ```rust
+      // In execute_steps, when from_step_id is set, mark later steps as "pending"
+      // (they were "failure" or never touched — reset them)
+      // This is already handled by the run_in_place approach in the next step.
+      ```
+
+      #### A5. Update `IpcStepRecord` in ipc.rs
+
+      Add `prompt: Option<String>` to `IpcStepRecord` and update `From<StepRecord>`.
+
+      #### A6. Update TypeScript type `IpcStepRecord` in ui-model.ts
+
+      Add `prompt: string | null`.
+
+      ### Part B: Frontend — expandable step rows
+
+      #### B1. Update `StepViewModel` in ui-model.ts
+
+      Add:
+      ```ts
+      prompt: string | null;
+      isExpandable: boolean;   // true if prompt is non-null
+      ```
+
+      In `createRunDetailViewModel`, populate:
+      ```ts
+      prompt: step.prompt ?? null,
+      isExpandable: !!(step.prompt),
+      ```
+      (The `step` here is from `detail.steps: IpcStepRecord[]` which now has `prompt`.)
+
+      Also add `formatRunStatus` import so "pending" maps to "pending" display label
+      (or you can add a case: `"pending"` → `"queued"`):
+      Update `formatRunStatus` in ui-model.ts:
+      ```ts
+      case "pending": return "queued";
+      ```
+
+      #### B2. App.tsx — expanded step state
+
+      Add state:
+      ```tsx
+      const [expandedStepIds, setExpandedStepIds] = useState<Set<string>>(new Set());
+      ```
+
+      Add toggle function:
+      ```tsx
+      function toggleStepExpanded(stepId: string): void {
+        setExpandedStepIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(stepId)) {
+            next.delete(stepId);
+          } else {
+            next.add(stepId);
+          }
+          return next;
+        });
+      }
+      ```
+
+      #### B3. App.tsx — new step row JSX
+
+      Replace the current step row with:
+      ```tsx
+      <li key={step.stepId}
+          className={`step-row ${step.isActive ? "is-active" : ""} step-status-${step.status}`}>
+
+        {/* ── Player button (left) ── */}
+        <div className="step-player">
+          {step.status === "running" ? (
+            <button
+              type="button"
+              className="player-btn stop-btn"
+              title="Stop this step"
+              onClick={() => void handleStopRun()}
+            >
+              ■
+            </button>
+          ) : step.status === "failure" || step.status === "stopped" ? (
+            <button
+              type="button"
+              className="player-btn resume-btn"
+              title="Resume from this step"
+              disabled={runDetail?.run.status === "running"}
+              onClick={() => void handleResumeRun()}
+            >
+              ▶
+            </button>
+          ) : step.status === "success" ? (
+            <span className="player-btn done-indicator" title="Completed">✓</span>
+          ) : (
+            /* pending / queued */
+            <span className="player-btn pending-indicator" title="Queued">▶</span>
+          )}
+        </div>
+
+        {/* ── Clickable header row: selects output pane ── */}
+        <button
+          type="button"
+          className="step-row-select"
+          onClick={() => {
+            setActiveStepId(step.stepId);
+            if (step.isExpandable) toggleStepExpanded(step.stepId);
+          }}
+          aria-expanded={expandedStepIds.has(step.stepId)}
+          aria-label={`Step ${step.stepNumber}: ${step.title}`}
+        >
+          <span className="step-number-badge">STEP {step.stepNumber}</span>
+          <span className="step-title">{step.title}</span>
+          <span className="step-filler" aria-hidden="true" />
+          <span className={`status-pill ${step.status}`}>{step.statusLabel}</span>
+        </button>
+
+        {/* ── Expanded prompt ── */}
+        {expandedStepIds.has(step.stepId) && step.prompt && (
+          <div className="step-prompt-expand">
+            <pre className="step-prompt-text">{step.prompt}</pre>
+          </div>
+        )}
+      </li>
+      ```
+
+      #### B4. styles.css — player button styles and expand area
+
+      ```css
+      /* Step row outer layout: player | select-row */
+      .step-row {
+        display: flex;
+        flex-direction: column;     /* column so expand drops below */
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+
+      /* Inner row (player + select) side by side */
+      .step-row > .step-player,
+      .step-row > .step-row-select {
+        /* arranged via a wrapper — see below */
+      }
+
+      /* Wrap player+select in a horizontal flex row */
+      /* Restructure: the <li> uses flex-column; the top bar uses flex-row */
+      /* We need a wrapper div for the top row — OR change li to be:
+         flex-column, and inside a .step-top-row flex-row */
+      /* Easiest: add a wrapper in JSX */
+      ```
+
+      Actually, to keep the HTML structure clean, wrap the player button and
+      step-row-select button in a `.step-top-row` div:
+
+      ```tsx
+      <li key={step.stepId} className={`step-row ${step.isActive ? "is-active" : ""} step-status-${step.status}`}>
+        <div className="step-top-row">
+          {/* player button */}
+          <div className="step-player"> ... </div>
+          {/* select/title button */}
+          <button type="button" className="step-row-select" ...> ... </button>
+        </div>
+        {/* expanded prompt */}
+        {expandedStepIds.has(step.stepId) && step.prompt && (
+          <div className="step-prompt-expand">
+            <pre className="step-prompt-text">{step.prompt}</pre>
+          </div>
+        )}
+      </li>
+      ```
+
+      CSS:
+      ```css
+      .step-row {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+
+      .step-row.is-active {
+        border-color: #0f172a;
+        background: #f8fafc;
+      }
+
+      .step-top-row {
+        display: flex;
+        align-items: center;
+        min-height: 2.2rem;
+      }
+
+      /* Player button column */
+      .step-player {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.2rem;
+        border-right: 1px solid #e2e8f0;
+      }
+
+      .player-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 1.6rem;
+        height: 1.6rem;
+        border-radius: 50%;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        cursor: pointer;
+        font-size: 0.7rem;
+        line-height: 1;
+        padding: 0;
+      }
+
+      .player-btn.stop-btn {
+        border-color: #dc2626;
+        color: #dc2626;
+        background: #fef2f2;
+      }
+
+      .player-btn.stop-btn:hover {
+        background: #fee2e2;
+      }
+
+      .player-btn.resume-btn {
+        border-color: #2563eb;
+        color: #2563eb;
+        background: #eff6ff;
+      }
+
+      .player-btn.resume-btn:hover:not(:disabled) {
+        background: #dbeafe;
+      }
+
+      .player-btn.resume-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .player-btn.done-indicator {
+        border-color: #16a34a;
+        color: #16a34a;
+        background: #f0fdf4;
+        cursor: default;
+      }
+
+      .player-btn.pending-indicator {
+        border-color: #cbd5e1;
+        color: #94a3b8;
+        background: #f8fafc;
+        cursor: default;
+      }
+
+      /* Expanded prompt area */
+      .step-prompt-expand {
+        border-top: 1px solid #e2e8f0;
+        background: #f8fafc;
+        padding: 0.6rem 0.75rem;
+      }
+
+      .step-prompt-text {
+        margin: 0;
+        font-size: 0.82rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #334155;
+        line-height: 1.4;
+        max-height: 200px;
+        overflow-y: auto;
+      }
+      ```
+
+      ### Part C: Tests
+
+      #### C1. lib.rs Rust tests
+
+      Update `append_logs_set_output_and_retrieve_detail` to pass `prompt: Some(...)` to `NewStep`.
+
+      Update `dry_run_two_step_promptbook_persists_steps_logs_and_outputs` in run_manager.rs:
+      - Add assertion that `detail.steps.len() == 2` (already true).
+      - Add assertion that all steps have a non-null `prompt` field:
+        ```rust
+        assert!(detail.steps.iter().all(|s| s.prompt.is_some()), "all steps should have prompt");
+        ```
+
+      #### C2. ui-model.test.ts
+
+      Add a test that `createRunDetailViewModel` includes `prompt` and `stepNumber`:
+      ```ts
+      it("step rows include stepNumber and prompt", () => {
+        const detail: IpcRunDetail = {
+          run: mockRunRecord("running"),
+          steps: [
+            { ...mockStepRecord("step-1", "running"), prompt: "Do the thing" },
+          ],
+          logs: [],
+          outputs: [],
+        };
+        const vm = createRunDetailViewModel(detail, "step-1");
+        expect(vm.stepRows[0].stepNumber).toBe(1);
+        expect(vm.stepRows[0].prompt).toBe("Do the thing");
+        expect(vm.stepRows[0].isExpandable).toBe(true);
+      });
+      ```
+
+      #### C3. App.test.ts
+
+      Update the mock IPC to return steps with `prompt` field:
+      ```ts
+      steps: [{ id: 1, run_id: 1, step_id: "s1", title: "Step 1",
+                 status: "success", started_at: null, finished_at: null,
+                 prompt: "Do the thing" }]
+      ```
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "fix-resume-in-place"
+    title: "Fix resume bug: continue existing run in-place (no new Runs entry)"
+    prompt: |
+      ## Problem
+      When a run fails and the user clicks Resume, the current code calls
+      `start_run_background_from` which calls `prepare_run` → creates a NEW run
+      record in the DB → appears as a NEW entry in the Runs list. The original
+      run stays as "failure" forever. This is wrong.
+
+      ## Goal
+      Resume should continue the EXISTING run:
+      - The original run's status changes from "failure" → "running" → "success"/"failure".
+      - The original run_id is reused for all events.
+      - No new entry appears in the Runs list.
+      - Steps that already succeeded are skipped.
+      - The first non-success step is re-executed.
+
+      ## Implementation
+
+      ### 1. New `resume_run_in_place` function in run_manager.rs
+
+      Add this public function:
+
+      ```rust
+      pub fn resume_run_in_place(
+          run_id: i64,
+          app_data_dir: &Path,
+          event_callback: Option<RunEventCallback>,
+      ) -> RunManagerResult<()> {
+          // 1. Load the existing run from DB
+          let repo = StorageRepository::open_in_app_data_dir(app_data_dir)?;
+          let detail = repo
+              .get_run_detail(run_id)?
+              .ok_or_else(|| RunManagerError::PromptbookParse(
+                  format!("run {run_id} not found")
+              ))?;
+
+          // 2. Parse metadata to get promptbook_path, workspace_dir, agent, model, effort
+          let metadata = parse_run_metadata_json(detail.run.metadata_json.as_deref());
+          let promptbook_path = metadata.promptbook_path
+              .ok_or_else(|| RunManagerError::PromptbookParse(
+                  "run has no promptbook_path in metadata".to_string()
+              ))?;
+          let workspace_dir = metadata.workspace_dir
+              .unwrap_or_else(|| ".".to_string());
+          let agent = detail.run.agent_default.clone();
+          let model = metadata.model.clone();
+          let effort_level = metadata.effort_level.clone();
+
+          // 3. Load promptbook
+          let promptbook = load_promptbook(Path::new(&promptbook_path))?;
+
+          // 4. Find the first non-success step (the resume point)
+          let succeeded_ids: std::collections::HashSet<String> = detail
+              .steps
+              .iter()
+              .filter(|s| s.status == "success")
+              .map(|s| s.step_id.clone())
+              .collect();
+
+          let from_step_id = promptbook
+              .steps
+              .iter()
+              .find(|s| !succeeded_ids.contains(&s.id))
+              .map(|s| s.id.clone());
+
+          // 5. Update run status to "running" in DB
+          let repo2 = StorageRepository::open_in_app_data_dir(app_data_dir)?;
+          repo2.update_run_status(run_id, "running", None)?;
+
+          // 6. Reset non-success steps to "pending" so they show correctly
+          for step in &promptbook.steps {
+              if !succeeded_ids.contains(&step.id) {
+                  // Step record may exist (failed) or not (never reached)
+                  // Upsert: update if exists, ignore if not present
+                  let _ = repo2.update_step_status(run_id, &step.id, "pending", None);
+              }
+          }
+
+          // 7. Register run handle with existing run_id
+          register_run_handle(run_id)?;
+
+          let app_data_dir_owned = app_data_dir.to_path_buf();
+          let workspace_path = Path::new(&workspace_dir).to_path_buf();
+          let from_step_id_clone = from_step_id.clone();
+          let promptbook_clone = promptbook.clone();
+          let model_clone = model.clone();
+          let effort_clone = effort_level.clone();
+
+          let join_handle = run_runtime().spawn_blocking(move || {
+              let result = (|| -> RunManagerResult<()> {
+                  let _slot = acquire_parallel_run_slot(DEFAULT_MAX_PARALLEL_RUNS)?;
+                  let repo = StorageRepository::open_in_app_data_dir(&app_data_dir_owned)?;
+
+                  let default_agent = agent
+                      .as_deref()
+                      .unwrap_or("codex")
+                      .to_string();
+                  let adapter_options = AdapterOptions {
+                      model: model_clone,
+                      effort_level: effort_clone,
+                      ..AdapterOptions::default()
+                  };
+
+                  let run_status = execute_steps_from(
+                      &repo,
+                      run_id,
+                      &promptbook_clone,
+                      &default_agent,
+                      &workspace_path,
+                      &app_data_dir_owned,
+                      from_step_id_clone.as_deref(),
+                      adapter_options,
+                      event_callback.as_ref(),
+                  )?;
+
+                  let finished_at = now_timestamp();
+                  repo.update_run_status(run_id, &run_status, Some(&finished_at))?;
+                  emit_run_event(
+                      event_callback.as_ref(),
+                      RunEvent::RunFinished { run_id, status: run_status, ts: finished_at },
+                  );
+                  unregister_run_handle(run_id)?;
+                  Ok(())
+              })();
+
+              if let Err(_err) = result {
+                  let _ = unregister_run_handle(run_id);
+                  if let Ok(repo) = StorageRepository::open_in_app_data_dir(&app_data_dir_owned) {
+                      let _ = repo.update_run_status(run_id, "failure", Some(&now_timestamp()));
+                  }
+              }
+          });
+          set_run_task(run_id, join_handle)?;
+          Ok(())
+      }
+      ```
+
+      Add a helper `parse_run_metadata_json` (equivalent to the `parse_run_metadata`
+      in ipc.rs but in run_manager.rs, returning a simple struct):
+      ```rust
+      struct RunMetadataFields {
+          promptbook_path: Option<String>,
+          workspace_dir: Option<String>,
+          model: Option<String>,
+          effort_level: Option<String>,
+      }
+
+      fn parse_run_metadata_json(metadata: Option<&str>) -> RunMetadataFields {
+          let Some(json) = metadata else {
+              return RunMetadataFields { promptbook_path: None, workspace_dir: None,
+                                         model: None, effort_level: None };
+          };
+          let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+              return RunMetadataFields { promptbook_path: None, workspace_dir: None,
+                                         model: None, effort_level: None };
+          };
+          RunMetadataFields {
+              promptbook_path: value.get("promptbook_path")
+                  .and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              workspace_dir: value.get("workspace_dir")
+                  .and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              model: value.get("model")
+                  .and_then(|v| v.as_str()).map(ToOwned::to_owned),
+              effort_level: value.get("effort_level")
+                  .and_then(|v| v.as_str()).map(ToOwned::to_owned),
+          }
+      }
+      ```
+
+      Also add `execute_steps_from` — essentially the current `execute_steps` but
+      extracted to accept `from_step_id` as a regular parameter and `AdapterOptions`
+      directly (instead of building it inside). This avoids code duplication.
+      Refactor `execute_steps` to call `execute_steps_from` internally.
+
+      ### 2. Update `resume_run` IPC command in ipc.rs
+
+      Replace the existing `resume_run` command body:
+      ```rust
+      #[tauri::command]
+      pub fn resume_run(
+          state: tauri::State<'_, IpcState>,
+          original_run_id: i64,
+      ) -> IpcResult<i64> {
+          let app_data_dir = state.resolve_app_data_dir();
+          let emitter = Arc::clone(&state.event_emitter);
+          let callback: RunEventCallback = Arc::new(move |event: RunEvent| {
+              let _ = emitter.emit_run_event(map_run_event(event));
+          });
+
+          crate::run_manager::resume_run_in_place(
+              original_run_id,
+              &app_data_dir,
+              Some(callback),
+          )
+          .map_err(|err| err.to_string())?;
+
+          // Return the SAME run_id so the UI re-selects it
+          Ok(original_run_id)
+      }
+      ```
+
+      Note the return type is still `IpcResult<i64>` (returns the original run_id)
+      so the frontend re-selects the same run — no need to change the frontend
+      `handleResumeRun` beyond confirming it calls `setSelectedRunId(newRunId)` where
+      `newRunId === original_run_id`.
+
+      ### 3. Export `resume_run_in_place` from lib.rs
+
+      Add to `pub use run_manager::{..., resume_run_in_place};` in lib.rs.
+
+      ### 4. Tests
+
+      #### Rust test: resume_run_in_place resumes correctly
+
+      In run_manager.rs tests:
+      ```rust
+      #[test]
+      fn resume_run_in_place_continues_from_failed_step_without_new_run() {
+          let _guard = run_manager_test_lock();
+          let workspace_dir = temp_workspace_dir("resume-in-place");
+          let promptbook_path = write_two_step_fixture(&workspace_dir);
+          let app_data_dir = workspace_dir.join(".promptbook_runs");
+
+          // Start a run that will succeed both steps
+          let run_id = run_promptbook(
+              &promptbook_path.to_string_lossy(),
+              Some("dry-run"),
+              &workspace_dir.to_string_lossy(),
+              None,
+              None,
+          ).expect("first run");
+
+          // Manually set step-1 to failure to simulate a stopped run
+          let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).unwrap();
+          repo.update_step_status(run_id, "step-1", "failure", None).unwrap();
+          repo.update_run_status(run_id, "failure", None).unwrap();
+          drop(repo);
+
+          // Resume in place
+          resume_run_in_place(run_id, &app_data_dir, None)
+              .expect("resume in place");
+
+          // Wait for completion
+          wait_for_run_completion(&app_data_dir, run_id);
+
+          let repo = StorageRepository::open_in_app_data_dir(&app_data_dir).unwrap();
+          let runs = repo.list_runs().unwrap();
+          // Should still be only ONE run (not two)
+          assert_eq!(runs.iter().filter(|r| r.id == run_id).count(), 1,
+              "resume should not create a new run");
+
+          let detail = repo.get_run_detail(run_id).unwrap().unwrap();
+          assert_eq!(detail.run.status, "success",
+              "run should be success after resume");
+
+          let _ = fs::remove_dir_all(workspace_dir);
+      }
+      ```
+
+      Note: `run_promptbook` signature now takes `model` and `effort_level` params
+      — pass `None, None`.
+
+      #### Vitest test: handleResumeRun re-selects same run
+
+      In App.test.ts, add a mock that returns the same run_id for `resume_run`
+      and verify the component doesn't create a duplicate entry.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "final-verify-r3"
+    title: "Final verification: full suite green + TEST_REPORT updated"
+    prompt: |
+      Run the complete test suite across all packages and lint everything.
+      Fix any remaining issues. Then update TEST_REPORT.md.
+
+      ```bash
+      pnpm test
+      cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      pnpm lint
+      ```
+
+      Append to TEST_REPORT.md a new section:
+      ```
+      ## Round 3 UX (ux-round3 v1.0.0)
+      ### Changes
+      - Agent/Model/Effort selectors on one horizontal row
+      - Dynamic model list from `openclaw models --status-json` (nothing hardcoded)
+      - Run Detail: all steps visible upfront (pending steps shown), expandable prompts
+      - Step player buttons: ■ stop / ▶ resume / ✓ done / ▶ queued
+      - Resume bug fixed: resumes existing run in-place, no duplicate Runs entry
+      ### Final test counts
+      - TypeScript: X passed
+      - Rust: Y passed
+      - Lint: 0 errors
+      ```
+
+      Commit: `ux3/final-verify-r3: Round 3 — all green`
+    verify:
+      - "pnpm test"
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm lint"
+      - "test -f TEST_REPORT.md"

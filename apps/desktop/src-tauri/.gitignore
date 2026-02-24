@@ -1,0 +1,27 @@
+# Node
+node_modules/
+.pnpm-store/
+
+# Rust / Tauri
+/target/
+**/*.rs.bk
+
+# Build outputs
+dist/
+build/
+
+# Logs
+*.log
+
+# Env / local config
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,668 @@
+schema_version: "promptbook/v1"
+name: "ux-round4"
+version: "1.0.0"
+description: >
+  Round-4 polish: step single-click=activate / double-click=expand,
+  player icon centering, initial run load fix, workspace auto-detect,
+  fixed-height scrollable panes, larger default window.
+
+defaults:
+  agent: "claude"
+  workspace_dir: "."
+  approval_mode: "auto"
+  timeout_minutes: 45
+
+global_rules:
+  - "Workspace is the repo root passed at runtime."
+  - "After implementing: run 'pnpm test' and 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' — both must be green."
+  - "Run 'pnpm lint' — zero errors."
+  - "Commit after each step: 'ux4/<step-id>: <step-title>'."
+  - "Update tests alongside implementation. Do NOT break existing tests."
+
+steps:
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-click-and-icons"
+    title: "Step click: activate-then-expand; fix player icon centering"
+    prompt: |
+      ## Issues
+
+      ### A — Click behaviour
+      Currently clicking ANY step row simultaneously activates it AND toggles its
+      expand state. The desired behaviour:
+      - **First click** on an inactive step → activate it only (no expand).
+      - **Click again** on the already-active step → toggle expand.
+
+      ### B — Player icon centering
+      The ▶ ■ ✓ Unicode characters sit off-centre inside their circular buttons.
+      This is a font-metrics issue — the characters have uneven bounding boxes.
+
+      ---
+
+      ## Fix A — App.tsx step-row-select onClick
+
+      Find the onClick handler on the `.step-row-select` button:
+      ```tsx
+      onClick={() => {
+        setActiveStepId(step.stepId);
+        if (step.isExpandable) toggleStepExpanded(step.stepId);
+      }}
+      ```
+
+      Replace with:
+      ```tsx
+      onClick={() => {
+        if (!step.isActive) {
+          // First click: only activate, do not expand
+          setActiveStepId(step.stepId);
+        } else if (step.isExpandable) {
+          // Already active: toggle expand
+          toggleStepExpanded(step.stepId);
+        }
+      }}
+      ```
+
+      ---
+
+      ## Fix B — styles.css player button centering
+
+      The existing `.player-btn` uses `display: flex` with `align-items: center`
+      and `justify-content: center`, but the `<span>` variants (done-indicator,
+      pending-indicator) inherit `display: inline` which ignores flex.
+
+      Replace the `.player-btn` block and all its variants:
+
+      ```css
+      .player-btn {
+        display: inline-flex;        /* works for both <button> and <span> */
+        align-items: center;
+        justify-content: center;
+        width: 1.8rem;
+        height: 1.8rem;
+        border-radius: 50%;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        cursor: pointer;
+        font-size: 0.65rem;
+        line-height: 1;
+        padding: 0;
+        /* Remove any inherited text-align / vertical-align issues */
+        text-align: center;
+        vertical-align: middle;
+        flex-shrink: 0;
+        /* Nudge text slightly for optical centering */
+        padding-top: 0.05em;
+      }
+
+      .player-btn.stop-btn {
+        border-color: #dc2626;
+        color: #dc2626;
+        background: #fef2f2;
+      }
+
+      .player-btn.stop-btn:hover { background: #fee2e2; }
+
+      .player-btn.resume-btn {
+        border-color: #2563eb;
+        color: #2563eb;
+        background: #eff6ff;
+      }
+
+      .player-btn.resume-btn:hover:not(:disabled) { background: #dbeafe; }
+
+      .player-btn.resume-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .player-btn.done-indicator {
+        border-color: #16a34a;
+        color: #16a34a;
+        background: #f0fdf4;
+        cursor: default;
+        /* ✓ looks better slightly larger */
+        font-size: 0.75rem;
+      }
+
+      .player-btn.pending-indicator {
+        border-color: #cbd5e1;
+        color: #94a3b8;
+        background: #f8fafc;
+        cursor: default;
+      }
+      ```
+
+      Also update `.step-player` so it uses `align-items: center; justify-content: center`:
+      ```css
+      .step-player {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.4rem;       /* slightly wider for breathing room */
+        border-right: 1px solid #e2e8f0;
+        align-self: stretch; /* fill full row height */
+      }
+      ```
+
+      ---
+
+      ## Tests
+
+      Update App.test.ts to add a test confirming that clicking an inactive step
+      does NOT add it to `expandedStepIds` (first click = activate only).
+
+      Also add a test that clicking an already-active step WITH `isExpandable=true`
+      does toggle expansion.
+
+      Use the existing mock infrastructure — set up a run with one step,
+      simulate two clicks, and assert the expected state.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "fix-initial-run-load"
+    title: "Fix: previous runs always visible on fresh app open"
+    prompt: |
+      ## Problem
+      When the app opens fresh, the Runs panel is empty. Runs only appear after
+      starting a new run from the UI. The root cause:
+
+      In `ipc.rs`, `start_run` calls `state.set_workspace_dir(&workspace_dir)`,
+      which mutates the `IpcState.app_data_dir` to point at
+      `<workspace>/.promptbook_runs`. So after a run:
+      - `list_runs` looks in `<workspace>/.promptbook_runs` → finds previous runs ✓
+
+      On fresh open, no workspace has been set yet, so `resolve_app_data_dir()`
+      returns the Tauri system data dir (e.g. `~/.local/share/com.promptbook.runner/`)
+      where there are NO runs → empty list ✗
+
+      ## Fix: use the Tauri system app_data_dir as the single source of truth
+
+      The storage DB should always live in one consistent location (the Tauri
+      system data dir), regardless of what workspace the agent runs in.
+      The `workspace_dir` is only needed as the CWD for agent execution.
+
+      ### 1. ipc.rs — remove `set_workspace_dir` call from `start_run`
+
+      In `start_run`, DELETE this line:
+      ```rust
+      state.set_workspace_dir(&workspace_dir);
+      ```
+
+      ### 2. run_manager.rs — stop deriving app_data_dir from workspace
+
+      In `prepare_run`, the current code does:
+      ```rust
+      let workspace_path = Path::new(workspace_dir);
+      let app_data_dir = workspace_path.join(".promptbook_runs");
+      ```
+
+      Change `prepare_run` to accept `app_data_dir: &Path` as an explicit parameter:
+      ```rust
+      fn prepare_run(
+          promptbook_path: &str,
+          agent: Option<&str>,
+          workspace_dir: &str,
+          model: Option<&str>,
+          effort_level: Option<&str>,
+          app_data_dir: &Path,       // NEW explicit parameter
+      ) -> RunManagerResult<PreparedRun>
+      ```
+      Remove the `let app_data_dir = workspace_path.join(".promptbook_runs");` line.
+      Use the passed `app_data_dir` instead.
+
+      Update all callers of `prepare_run` inside run_manager.rs to pass
+      `app_data_dir` explicitly:
+      - `run_promptbook` → receives `app_data_dir: &Path` parameter, passes to `prepare_run`
+      - `start_run_background` → same
+
+      Update public function signatures:
+      ```rust
+      pub fn run_promptbook(
+          promptbook_path: &str,
+          agent: Option<&str>,
+          workspace_dir: &str,
+          model: Option<&str>,
+          effort_level: Option<&str>,
+          app_data_dir: &Path,       // NEW
+      ) -> RunManagerResult<i64>
+
+      pub fn start_run_background(
+          promptbook_path: &str,
+          agent: Option<&str>,
+          workspace_dir: &str,
+          model: Option<&str>,
+          effort_level: Option<&str>,
+          app_data_dir: &Path,       // NEW
+          event_callback: Option<RunEventCallback>,
+      ) -> RunManagerResult<i64>
+      ```
+
+      ### 3. ipc.rs `start_run` — pass app_data_dir from state
+
+      ```rust
+      #[tauri::command]
+      pub fn start_run(
+          state: tauri::State<'_, IpcState>,
+          promptbook_path: String,
+          agent: Option<String>,
+          model: Option<String>,
+          effort_level: Option<String>,
+          workspace_dir: String,
+      ) -> IpcResult<i64> {
+          let app_data_dir = state.resolve_app_data_dir(); // always fixed Tauri dir
+          let emitter = Arc::clone(&state.event_emitter);
+          let callback = Arc::new(move |event: RunEvent| {
+              let _ = emitter.emit_run_event(map_run_event(event));
+          });
+          start_run_background(
+              &promptbook_path,
+              agent.as_deref(),
+              &workspace_dir,
+              model.as_deref(),
+              effort_level.as_deref(),
+              &app_data_dir,
+              Some(callback),
+          )
+          .map_err(|err| err.to_string())
+      }
+      ```
+
+      ### 4. ipc.rs `resume_run` — also pass app_data_dir explicitly
+
+      ```rust
+      #[tauri::command]
+      pub fn resume_run(
+          state: tauri::State<'_, IpcState>,
+          original_run_id: i64,
+      ) -> IpcResult<i64> {
+          let app_data_dir = state.resolve_app_data_dir();
+          let emitter = Arc::clone(&state.event_emitter);
+          let callback: RunEventCallback = Arc::new(move |event: RunEvent| {
+              let _ = emitter.emit_run_event(map_run_event(event));
+          });
+          crate::run_manager::resume_run_in_place(
+              original_run_id,
+              &app_data_dir,
+              Some(callback),
+          )
+          .map_err(|err| err.to_string())?;
+          Ok(original_run_id)
+      }
+      ```
+
+      ### 5. lib.rs — update public re-exports
+
+      Update `pub use run_manager::{...}` to match updated signatures.
+
+      ### 6. Remove `set_workspace_dir` and related dead code from IpcState
+
+      Remove the `set_workspace_dir` method from `IpcState` if nothing else uses it.
+      Remove the mutable `app_data_dir` Mutex — it can become a plain `PathBuf`
+      since the value is now immutable after construction:
+      ```rust
+      pub struct IpcState {
+          app_data_dir: PathBuf,          // immutable
+          event_emitter: Arc<dyn RunEventEmitter>,
+      }
+      ```
+      Update `resolve_app_data_dir` to just return `self.app_data_dir.clone()`.
+      Update constructors accordingly.
+
+      ### 7. Update all Rust tests
+
+      In `run_manager.rs` tests, update every call to `run_promptbook`,
+      `start_run_background`, `start_run_background_from` to pass
+      `app_data_dir = workspace_dir.join(".promptbook_runs")` explicitly.
+
+      This keeps test data isolated per test (existing behaviour), while the
+      production code uses the fixed Tauri app data dir.
+
+      ### 8. Also store last workspace_dir in metadata for resume (already done)
+
+      Resume reads `workspace_dir` from `metadata_json` — this should still work
+      since the run record's metadata contains `workspace_dir`.
+
+      ## Verification
+      - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — all pass
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "workspace-auto-detect"
+    title: "Auto-set workspace dir from selected promptbook path"
+    prompt: |
+      ## Problem
+      When the user picks a promptbook via Browse or Import sample, the Workspace
+      directory field stays at "." — the user has to manually set it to the
+      project root. It should auto-populate from the promptbook location.
+
+      ## Rule
+      When a promptbook path is set (via Browse or Import), set `workspaceDir` to
+      the **parent directory of the promptbook file**.
+
+      E.g. `/home/smbat/Projects/promptbook_app/promptbooks/hello.yaml`
+      → workspace = `/home/smbat/Projects/promptbook_app/promptbooks`
+
+      The user can still override the workspace field manually.
+
+      ## Fix A — `handlePromptbookPicker` in App.tsx
+
+      ```tsx
+      async function handlePromptbookPicker(): Promise<void> {
+        try {
+          const selectedPath = await invoke<string | null>("open_file_picker_for_promptbook");
+          if (selectedPath) {
+            // Derive workspace dir from file's parent directory
+            const lastSep = Math.max(
+              selectedPath.lastIndexOf("/"),
+              selectedPath.lastIndexOf("\\")
+            );
+            const parentDir = lastSep > 0 ? selectedPath.slice(0, lastSep) : ".";
+            setDashboard((current) => ({
+              ...current,
+              promptbookPath: selectedPath,
+              workspaceDir: parentDir,
+            }));
+          }
+        } catch (error) {
+          pushErrorToast(`Failed to open file picker: ${getErrorMessage(error)}`);
+        }
+      }
+      ```
+
+      ## Fix B — `handleImportSamplePromptbook` in App.tsx
+
+      ```tsx
+      function handleImportSamplePromptbook(): void {
+        if (samplePromptbooks.length === 0) {
+          pushErrorToast("No sample promptbooks available");
+          return;
+        }
+        const selected = samplePromptbooks.find((sample) => sample.id === selectedSampleId);
+        if (!selected) {
+          pushErrorToast("Select a sample promptbook first");
+          return;
+        }
+        // Derive workspace dir from file's parent directory
+        const lastSep = Math.max(
+          selected.path.lastIndexOf("/"),
+          selected.path.lastIndexOf("\\")
+        );
+        const parentDir = lastSep > 0 ? selected.path.slice(0, lastSep) : ".";
+        setDashboard((current) => ({
+          ...current,
+          promptbookPath: selected.path,
+          workspaceDir: parentDir,
+        }));
+      }
+      ```
+
+      ## Tests — App.test.ts / ui-model.test.ts
+
+      Add a pure unit test for the path-parent logic (extract it into a small
+      helper `promptbookParentDir(path: string): string` in ui-model.ts or a
+      separate utils.ts):
+
+      ```ts
+      import { promptbookParentDir } from "./ui-model";
+
+      it("extracts parent dir from unix path", () => {
+        expect(promptbookParentDir("/home/user/project/promptbooks/foo.yaml"))
+          .toBe("/home/user/project/promptbooks");
+      });
+
+      it("returns '.' for bare filename", () => {
+        expect(promptbookParentDir("hello.yaml")).toBe(".");
+      });
+
+      it("handles windows path separators", () => {
+        expect(promptbookParentDir("C:\\Users\\bob\\foo.yaml")).toBe("C:\\Users\\bob");
+      });
+      ```
+
+      Export `promptbookParentDir` from `ui-model.ts` and use it in both
+      handlers in App.tsx.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "pane-fixed-height"
+    title: "Live Progress + Final Output: fixed height with scroll"
+    prompt: |
+      ## Problem
+      The Live Progress and Final Output panes grow with content and push other
+      sections off screen. They need a fixed height with internal scrolling.
+
+      ## Fix — styles.css
+
+      ### 1. Make the run-detail panel use full remaining height properly
+
+      The `.run-detail` panel is already:
+      ```css
+      .run-detail {
+        display: grid;
+        grid-template-rows: auto auto auto 1fr;
+        min-height: 0;
+      }
+      ```
+      The `1fr` row is the `.split-pane-grid`. Ensure `overflow: hidden` on
+      `.run-detail` so the grid can shrink:
+      ```css
+      .run-detail {
+        display: grid;
+        grid-template-rows: auto auto auto 1fr;
+        min-height: 0;
+        overflow: hidden;
+      }
+      ```
+
+      ### 2. Fix the split-pane-grid to fill the 1fr row
+
+      ```css
+      .split-pane-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+        padding: 0 1rem 1rem;
+        min-height: 0;
+        overflow: hidden;   /* ADD */
+      }
+      ```
+
+      ### 3. Give each pane a FIXED height with scroll
+
+      Replace the existing `.pane` block:
+      ```css
+      .pane {
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        height: 320px;         /* fixed height */
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .pane h3 {
+        font-size: 1rem;
+        flex-shrink: 0;        /* heading never scrolls away */
+      }
+
+      .pane pre {
+        margin: 0;
+        flex: 1;               /* fills remaining space */
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        background: #f8fafc;
+        padding: 0.6rem;
+        overflow-y: auto;      /* scroll when content overflows */
+        white-space: pre-wrap;
+        line-height: 1.35;
+        min-height: 0;
+      }
+
+      .pane label {
+        display: grid;
+        gap: 0.35rem;
+        flex-shrink: 0;
+      }
+
+      .pane select {
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 0.45rem 0.6rem;
+      }
+      ```
+
+      ### 4. Responsive: on narrow screens each pane still has fixed height
+
+      Keep in the media query:
+      ```css
+      @media (max-width: 1080px) {
+        .split-pane-grid {
+          grid-template-columns: 1fr;
+        }
+        /* each pane keeps its 320px height — only one shows at a time */
+      }
+      ```
+
+      ## Tests
+
+      No new tests needed for pure CSS changes. Ensure existing tests still pass.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "window-size"
+    title: "Larger default window so all sections fit without scrolling"
+    prompt: |
+      ## Problem
+      Default window is 960×640. The Runs sidebar is 280px wide, leaving only
+      ~680px for the main content area — the panes are cramped. The overall
+      layout needs more breathing room.
+
+      ## Fix 1 — tauri.conf.json: increase default window size
+
+      In `apps/desktop/src-tauri/tauri.conf.json`, update the window config:
+      ```json
+      {
+        "label": "main",
+        "title": "Promptbook Runner",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+      ```
+
+      ## Fix 2 — styles.css: widen sidebar, improve main-column layout
+
+      ### Sidebar
+      ```css
+      .app-shell {
+        display: grid;
+        grid-template-columns: 300px minmax(0, 1fr);  /* 280 → 300 */
+        gap: 1rem;
+        min-height: 100vh;
+        padding: 1rem;
+      }
+      ```
+
+      ### Ensure the step-list and panes use the extra space well
+
+      The `.step-list` already uses `display: grid; gap: 0.4rem;` — no change.
+
+      ### Run detail: expand step-list to show more steps before scrolling
+      Give the step-list a max-height with scrolling so it doesn't push panes away:
+      ```css
+      .step-list {
+        list-style: none;
+        margin: 0;
+        padding: 0.75rem 1rem 0;
+        display: grid;
+        gap: 0.4rem;
+        max-height: 240px;      /* ADD — shows ~4-5 steps, then scrolls */
+        overflow-y: auto;
+      }
+      ```
+
+      ## Fix 3 — run-detail grid rows: allocate space better
+
+      Current:
+      ```css
+      .run-detail {
+        grid-template-rows: auto auto auto 1fr;
+      }
+      ```
+      This means: header | step-list | tabs | pane-grid. Keep this but ensure
+      the step-list row doesn't collapse the pane-grid row. With max-height on
+      `.step-list` the layout should work naturally.
+
+      ## Tests
+
+      No functional tests needed. Ensure existing tests pass.
+
+      ## Verification
+      - `pnpm test` — all pass
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "final-verify-r4"
+    title: "Final verify: full suite green, TEST_REPORT updated"
+    prompt: |
+      Run the complete test suite and lint. Fix anything broken.
+
+      ```bash
+      pnpm test
+      cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      pnpm lint
+      ```
+
+      Append to TEST_REPORT.md:
+      ```
+      ## Round 4 Polish (ux-round4 v1.0.0)
+      ### Changes
+      - Step rows: first click activates, second click expands prompt
+      - Player icons properly centered (inline-flex + optical nudge)
+      - Previous runs always visible on fresh app open (fixed DB path)
+      - Workspace dir auto-set from selected promptbook's parent directory
+      - Live Progress / Final Output: fixed 320px height with scroll
+      - Default window 1440×900 with 900×600 minimum
+      ### Final test counts
+      - TypeScript: X passed
+      - Rust: Y passed
+      - Lint: 0 errors
+      ```
+
+      Commit: `ux4/final-verify-r4: Round 4 — all green`
+    verify:
+      - "pnpm test"
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm lint"
+      - "test -f TEST_REPORT.md"

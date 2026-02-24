@@ -96,13 +96,33 @@ describe("formatRunStatus", () => {
 });
 
 describe("IpcModelInfo", () => {
-  it("IpcModelInfo type is exported", () => {
+  it("IpcModelInfo type supports effort_levels array", () => {
     const model: IpcModelInfo = {
       id: "claude-sonnet-4-6",
       name: "Claude Sonnet 4.6",
-      supports_effort: true,
+      effort_levels: [
+        { id: "low", name: "Low" },
+        { id: "medium", name: "Medium" },
+        { id: "high", name: "High" },
+      ],
+      default_effort: "medium",
+      is_default: true,
     };
-    expect(model.supports_effort).toBe(true);
+    expect(model.effort_levels.length).toBe(3);
+    expect(model.is_default).toBe(true);
+    expect(model.default_effort).toBe("medium");
+  });
+
+  it("IpcModelInfo with empty effort_levels means no effort support", () => {
+    const model: IpcModelInfo = {
+      id: "haiku",
+      name: "Claude Haiku 4.5",
+      effort_levels: [],
+      default_effort: null,
+      is_default: false,
+    };
+    expect(model.effort_levels.length).toBe(0);
+    expect(model.default_effort).toBeNull();
   });
 });
 

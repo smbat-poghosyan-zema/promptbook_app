@@ -1,0 +1,224 @@
+schema_version: "promptbook/v1"
+name: "design-improvements"
+version: "1.0.0"
+description: >
+  Implements the new semantic design system using CSS variables,
+  improves component UI/UX alignments (buttons, inputs, run list),
+  and enhances accessibility (focus states and ARIA).
+
+defaults:
+  agent: "claude"
+  workspace_dir: "."
+  approval_mode: "auto"
+  timeout_minutes: 45
+
+global_rules:
+  - "Workspace is the repo root passed at runtime."
+  - "After implementing: run 'pnpm test' and 'cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml' — both must be green."
+  - "Run 'pnpm lint' — zero errors."
+  - "Commit after each step: 'design/<step-id>: <step-title>'."
+  - "Update tests alongside implementation. Do NOT break existing tests."
+
+steps:
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-css-variables"
+    title: "Introduce Semantic CSS Variables"
+    prompt: |
+      ## Problem
+      The `apps/desktop/src/styles.css` file relies completely on hardcoded hex colors
+      and lacks standardized spacing/radii tokens. We need to introduce a design
+      system using `:root` variables.
+
+      ## Instructions
+      Update `apps/desktop/src/styles.css` `:root` selector:
+
+      ```css
+      :root {
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+        
+        /* Brand Colors */
+        --brand-primary: #0f172a;
+        --brand-primary-hover: #1e293b;
+        --brand-danger: #dc2626;
+        --brand-danger-hover: #b91c1c;
+
+        /* Semantic Colors */
+        --bg-page: #f8fafc;
+        --bg-panel: #ffffff;
+        --bg-hover: #f1f5f9;
+        --text-primary: #0f172a;
+        --text-secondary: #475569;
+        
+        /* Borders */
+        --border-default: #cbd5e1;
+        --border-light: #e2e8f0;
+        
+        /* Spacing & Radii */
+        --space-xs: 0.25rem;
+        --space-sm: 0.5rem;
+        --space-md: 0.75rem;
+        --space-lg: 1rem;
+        --radius-sm: 4px;
+        --radius-md: 6px;
+        --radius-lg: 8px;
+        
+        /* Shadows */
+        --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+        --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+
+        color: var(--text-primary);
+        background: var(--bg-page);
+      }
+      ```
+
+      Replace the following hardcoded values everywhere in `styles.css`:
+      - `#0f172a` -> `var(--brand-primary)` or `var(--text-primary)` as appropriate.
+      - `#f8fafc` -> `var(--bg-page)`
+      - `#fff` or `#ffffff` -> `var(--bg-panel)`
+      - `#cbd5e1` -> `var(--border-default)`
+      - `#e2e8f0` -> `var(--border-light)`
+      - `#475569` -> `var(--text-secondary)`
+      - `#f1f5f9` -> `var(--bg-hover)`
+
+      ## Verification
+      - `pnpm lint` — zero errors
+      - Code builds cleanly.
+    verify:
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-buttons-inputs"
+    title: "Polish Buttons, Inputs, and Forms"
+    prompt: |
+      ## Problem
+      Buttons and form inputs lack smooth hover/active transitions and proper
+      accessibility focus rings. Inputs need slightly softer padding and borders.
+
+      ## Instructions
+      In `apps/desktop/src/styles.css`:
+
+      1. Update general interactive element styles (Buttons, Inputs, Selects):
+      - Replace `border-radius: 6px;` or `8px` with `var(--radius-md)` or `var(--radius-lg)`.
+      - Add transition to all interactive elements: `transition: all 0.2s ease;`
+      - Add a focus-visible outline for keyboard navigation accessibility:
+        ```css
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible {
+          outline: 2px solid var(--brand-primary);
+          outline-offset: 2px;
+        }
+        ```
+
+      2. Enhance Buttons specifically:
+      - For `.dashboard-form button[type="submit"]` and similar primary buttons, change the hover background to `var(--brand-primary-hover)`.
+      - For `.secondary-action` buttons, add a hover effect mutating background to `var(--border-default)`.
+      - Add `:active` states for a "pressed" effect (e.g., `transform: translateY(1px);`).
+
+      3. Enhance `.panel`:
+      - Add `box-shadow: var(--shadow-sm);` to `.panel` to lift it slightly off the page background.
+
+      ## Verification
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-run-list"
+    title: "Enhance Run List Interactions"
+    prompt: |
+      ## Problem
+      The `.run-item` list in the sidebar feels static and the selected state needs a clearer distinction from the normal hover state.
+
+      ## Instructions
+      In `apps/desktop/src/styles.css`:
+
+      1. Add hover states to `.run-item`:
+      ```css
+      .run-item {
+        /* existing styles */
+        transition: all 0.2s ease;
+      }
+      .run-item:hover:not(.is-selected) {
+        background: var(--bg-hover);
+        border-color: var(--border-default);
+      }
+      ```
+
+      2. Enhance `.run-item.is-selected`:
+      Ensure it stands out and uses the variables:
+      ```css
+      .run-item.is-selected {
+        border-color: var(--brand-primary);
+        background: var(--bg-hover); /* Or introduce a very faint primary tint var */
+        box-shadow: 0 0 0 1px var(--brand-primary); /* Bolden the border visually */
+      }
+      ```
+      Make sure `.run-item:focus-visible` utilizes the new global focus outline.
+
+      ## Verification
+      - `pnpm lint` — zero errors
+    verify:
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "step-a11y-semantics"
+    title: "Ensure A11y Semantics & Contrast"
+    prompt: |
+      ## Problem
+      While visual states are improved, we need to guarantee status pill text contrast and verify aria-labels inside the component structure.
+
+      ## Instructions
+      1. Review `.status-pill` colors in `styles.css`:
+      Check the combinations:
+      - `.running` (color: `#b45309` on `#fffbeb`)
+      - `.success` (color: `#15803d` on `#f0fdf4`)
+      - `.failure` (color: `#b91c1c` on `#fef2f2`)
+      - `.stopped` / `.cancelled` (color: `#475569` on `#f8fafc`)
+      These native tailwind-like colors are generally WCAG AA compliant, but ensure they aren't muted by our new variables. Convert them to variables if it makes sense, or leave them as absolute hex for specific status intents.
+
+      2. In `apps/desktop/src/App.tsx`:
+      - Audit `aria-label` tags on buttons. Ensure icon-only buttons (like the `player-btn`) have sufficient and correct `title` and/or `aria-label`. They currently use `title`, consider adding `aria-label` where missing.
+      - Ensure the split-pane tabs (`.split-tabs button`) have proper `aria-controls` or at least confirm the existing `role="tab"` and `aria-selected` are functioning perfectly.
+
+      ## Verification
+      - `pnpm test`
+      - `pnpm lint`
+    verify:
+      - "pnpm test"
+      - "pnpm lint"
+
+  # ─────────────────────────────────────────────────────────────────
+  - id: "final-verify-design"
+    title: "Final Verify and Update Test Report"
+    prompt: |
+      Run the complete test suite and lint. Fix anything broken.
+
+      ```bash
+      pnpm test
+      cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      pnpm lint
+      ```
+
+      Append to `TEST_REPORT.md`:
+      ```
+      ## Design Improvements (design-improvements v1.0.0)
+      ### Changes
+      - Implemented semantic CSS variables in :root for colors, spacing, and radii.
+      - Added smooth transitions and interactive states (hover/active) for buttons and inputs.
+      - Enhanced global focus-visible outlines for keyboard accessibility.
+      - Improved .run-item interactivity and visual footprint.
+      - Audited ARIA labels and contrast ratios for compliance.
+      ### Final test counts
+      - TypeScript: X passed
+      - Rust: Y passed
+      - Lint: 0 errors
+      ```
+
+      Commit: `design/final-verify: Design improvements deployed — all green`
+    verify:
+      - "pnpm test"
+      - "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "pnpm lint"
+      - "test -f TEST_REPORT.md"

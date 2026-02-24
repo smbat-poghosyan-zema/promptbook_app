@@ -4,8 +4,19 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "pnpm --filter @promptbook/desktop dev",
-    "test": "pnpm --filter @promptbook/desktop test",
+    "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",
     "build": "pnpm --filter @promptbook/desktop build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.19.0",
+    "@typescript-eslint/eslint-plugin": "^8.23.0",
+    "@typescript-eslint/parser": "^8.23.0",
+    "eslint": "^9.19.0",
+    "eslint-config-prettier": "^10.0.1",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "yaml": "^2.8.2"
   }
 }

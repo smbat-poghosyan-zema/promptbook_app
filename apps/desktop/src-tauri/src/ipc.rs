@@ -1,5 +1,8 @@
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -31,10 +34,18 @@ pub struct IpcRunRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EffortLevelInfo {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IpcModelInfo {
     pub id: String,
     pub name: String,
-    pub supports_effort: bool,
+    pub effort_levels: Vec<EffortLevelInfo>,
+    pub default_effort: Option<String>,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -131,6 +142,7 @@ impl RunEventEmitter for TauriRunEventEmitter {
 pub struct IpcState {
     app_data_dir: PathBuf,
     event_emitter: Arc<dyn RunEventEmitter>,
+    model_cache: Arc<Mutex<HashMap<String, Vec<IpcModelInfo>>>>,
 }
 
 impl IpcState {
@@ -142,6 +154,7 @@ impl IpcState {
         Self {
             app_data_dir: Path::new(".").join(".promptbook_runs"),
             event_emitter,
+            model_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -149,6 +162,7 @@ impl IpcState {
         Self {
             app_data_dir: app_data_dir.to_path_buf(),
             event_emitter,
+            model_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -167,12 +181,12 @@ struct RunMetadata {
     model: Option<String>,
     effort_level: Option<String>,
     workspace_dir: Option<String>,
-    promptbook_path: Option<String>,
+    _promptbook_path: Option<String>,
 }
 
 impl Default for RunMetadata {
     fn default() -> Self {
-        Self { model: None, effort_level: None, workspace_dir: None, promptbook_path: None }
+        Self { model: None, effort_level: None, workspace_dir: None, _promptbook_path: None }
     }
 }
 
@@ -185,7 +199,7 @@ fn parse_run_metadata(metadata: Option<&str>) -> RunMetadata {
         model: value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned),
         effort_level: value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned),
         workspace_dir: value.get("workspace_dir").and_then(|v| v.as_str()).map(ToOwned::to_owned),
-        promptbook_path: value.get("promptbook_path").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+        _promptbook_path: value.get("promptbook_path").and_then(|v| v.as_str()).map(ToOwned::to_owned),
     }
 }
 
@@ -284,56 +298,219 @@ pub fn get_run_detail(state: tauri::State<'_, IpcState>, run_id: i64) -> IpcResu
     Ok(detail.map(IpcRunDetail::from))
 }
 
-#[tauri::command]
-pub fn list_agent_models(agent: String) -> IpcResult<Vec<IpcModelInfo>> {
-    let output = std::process::Command::new("openclaw")
-        .args(["models", "--status-json"])
-        .output()
-        .map_err(|err| format!("openclaw not found: {err}"))?;
+// ── Fallback config (embedded at compile time) ────────────────────────
 
-    if !output.status.success() {
-        return Err(format!(
-            "openclaw models failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+#[derive(Debug, Clone, Deserialize)]
+struct AgentModelsEntry {
+    models: Vec<IpcModelInfo>,
+}
+
+fn load_fallback_models(agent: &str) -> Vec<IpcModelInfo> {
+    static CONFIG: OnceLock<HashMap<String, AgentModelsEntry>> = OnceLock::new();
+    let config = CONFIG.get_or_init(|| {
+        let raw = include_str!("../agent-models.json");
+        serde_json::from_str::<HashMap<String, AgentModelsEntry>>(raw).unwrap_or_default()
+    });
+    config.get(agent).map(|e| e.models.clone()).unwrap_or_default()
+}
+
+// ── Per-agent dynamic fetching ────────────────────────────────────────
+
+fn fetch_codex_models() -> IpcResult<Vec<IpcModelInfo>> {
+    // Spawn codex app-server with a timeout
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(fetch_codex_models_inner());
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap_or_else(|_| Err("codex app-server timed out".to_string()))
+}
+
+fn fetch_codex_models_inner() -> IpcResult<Vec<IpcModelInfo>> {
+    let mut child = Command::new("codex")
+        .args(["app-server", "--listen", "stdio://"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("codex not found: {e}"))?;
+
+    let mut stdin = child.stdin.take().ok_or("failed to open codex stdin")?;
+    let stdout = child.stdout.take().ok_or("failed to open codex stdout")?;
+    let mut reader = BufReader::new(stdout);
+
+    // 1. Send "initialize"
+    send_jsonrpc(&mut stdin, 1, "initialize", json!({
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": { "name": "promptbook-runner", "version": "0.1.0" }
+    }))?;
+    let _init = read_jsonrpc(&mut reader)?;
+
+    // 2. Send "initialized" notification
+    send_jsonrpc_notification(&mut stdin, "notifications/initialized", json!({}))?;
+
+    // 3. Send "model/list"
+    send_jsonrpc(&mut stdin, 2, "model/list", json!({ "includeHidden": true }))?;
+    let model_response = read_jsonrpc(&mut reader)?;
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    parse_codex_model_list_response(&model_response)
+}
+
+fn send_jsonrpc(stdin: &mut impl IoWrite, id: u64, method: &str, params: Value) -> IpcResult<()> {
+    let request = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let body = request.to_string();
+    let msg = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+    stdin.write_all(msg.as_bytes()).map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
+fn send_jsonrpc_notification(stdin: &mut impl IoWrite, method: &str, params: Value) -> IpcResult<()> {
+    let notif = json!({ "jsonrpc": "2.0", "method": method, "params": params });
+    let body = notif.to_string();
+    let msg = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+    stdin.write_all(msg.as_bytes()).map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())
+}
+
+fn read_jsonrpc(reader: &mut impl BufRead) -> IpcResult<Value> {
+    let mut content_length: usize = 0;
+    let mut header = String::new();
+    loop {
+        header.clear();
+        reader.read_line(&mut header).map_err(|e| e.to_string())?;
+        let trimmed = header.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(val) = trimmed.strip_prefix("Content-Length: ") {
+            content_length = val.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+        }
+    }
+    if content_length == 0 {
+        return Err("empty Content-Length in JSON-RPC response".to_string());
+    }
+    let mut body = vec![0u8; content_length];
+    reader.read_exact(&mut body).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&body).map_err(|e| e.to_string())
+}
+
+fn parse_codex_model_list_response(response: &Value) -> IpcResult<Vec<IpcModelInfo>> {
+    let models = response
+        .get("result")
+        .and_then(|r| r.get("models"))
+        .and_then(|m| m.as_array())
+        .ok_or("missing result.models in codex response")?;
+
+    let mut result = Vec::new();
+    for model in models {
+        let id = model.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        if id.is_empty() { continue; }
+        let display_name = model.get("displayName").and_then(|v| v.as_str()).unwrap_or(id);
+        let is_default = model.get("isDefault").and_then(|v| v.as_bool()).unwrap_or(false);
+        let default_effort = model.get("defaultReasoningEffort").and_then(|v| v.as_str()).map(ToOwned::to_owned);
+
+        let effort_levels: Vec<EffortLevelInfo> = model
+            .get("reasoningEffort")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str())
+                    .map(|e| EffortLevelInfo { id: e.to_string(), name: effort_display_name(e) })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.push(IpcModelInfo {
+            id: id.to_string(),
+            name: display_name.to_string(),
+            effort_levels,
+            default_effort,
+            is_default,
+        });
+    }
+    Ok(result)
+}
+
+fn effort_display_name(effort_id: &str) -> String {
+    match effort_id {
+        "low" => "Low".to_string(),
+        "medium" => "Medium".to_string(),
+        "high" => "High".to_string(),
+        "xhigh" => "Extra High".to_string(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        }
+    }
+}
+
+fn fetch_claude_models() -> IpcResult<Vec<IpcModelInfo>> {
+    Ok(load_fallback_models("claude"))
+}
+
+fn fetch_copilot_models() -> IpcResult<Vec<IpcModelInfo>> {
+    let output = Command::new("copilot")
+        .args(["--help"])
+        .output()
+        .map_err(|e| format!("copilot not found: {e}"))?;
+
+    let help_text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    parse_copilot_help_models(&help_text)
+}
+
+fn parse_copilot_help_models(help_text: &str) -> IpcResult<Vec<IpcModelInfo>> {
+    // Look for --model section and extract quoted model names
+    // Format: --model <model>  ... (choices: "model-a", "model-b", ...)
+    let model_section = help_text.find("--model")
+        .ok_or("could not find --model in copilot --help")?;
+    let after_model = &help_text[model_section..];
+
+    let mut models = Vec::new();
+
+    // Strategy: find "choices:" or the first quoted string sequence near --model
+    // Copilot format: (choices: "claude-sonnet-4.6", "claude-opus-4.6", ...)
+    if let Some(choices_start) = after_model.find("choices:") {
+        let choices_text = &after_model[choices_start..];
+        // Find the closing paren
+        let end = choices_text.find(')').unwrap_or(choices_text.len());
+        let choices_slice = &choices_text[..end];
+
+        // Extract all quoted strings
+        for part in choices_slice.split('"') {
+            let trimmed = part.trim();
+            // Skip parts that are just commas, whitespace, or "choices:"
+            if trimmed.is_empty() || trimmed.starts_with("choices") || trimmed == "," || trimmed == ", " {
+                continue;
+            }
+            // Validate it looks like a model id (contains alphanumeric and dashes/dots)
+            if trimmed.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.') && trimmed.contains('-') {
+                let is_first = models.is_empty();
+                models.push(IpcModelInfo {
+                    id: trimmed.to_string(),
+                    name: pretty_model_name(trimmed),
+                    effort_levels: Vec::new(),
+                    default_effort: None,
+                    is_default: is_first,
+                });
+            }
+        }
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .map_err(|err| format!("failed to parse openclaw output: {err}"))?;
-
-    let allowed = json
-        .get("allowed")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "openclaw output missing 'allowed' field".to_string())?;
-
-    let models: Vec<IpcModelInfo> = allowed
-        .iter()
-        .filter_map(|v| v.as_str())
-        .filter_map(|full_id| {
-            let (provider, model_id) = full_id.split_once('/')?;
-            let matches_agent = match agent.as_str() {
-                "claude" => provider == "anthropic",
-                "codex"  => provider == "openai" || provider == "openai-codex",
-                _        => false,
-            };
-            if !matches_agent {
-                return None;
-            }
-            let supports_effort = matches!(provider, "anthropic" | "openai" | "openai-codex");
-            let name = pretty_model_name(model_id);
-            Some(IpcModelInfo {
-                id: model_id.to_string(),
-                name,
-                supports_effort,
-            })
-        })
-        // Deduplicate by id (openai/ and openai-codex/ may repeat same model)
-        .fold(Vec::new(), |mut acc, m| {
-            if !acc.iter().any(|x: &IpcModelInfo| x.id == m.id) {
-                acc.push(m);
-            }
-            acc
-        });
+    if models.is_empty() {
+        return Err("could not parse model choices from copilot --help".to_string());
+    }
 
     Ok(models)
 }
@@ -357,6 +534,48 @@ fn pretty_model_name(model_id: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ── IPC commands ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn list_agent_models(
+    state: tauri::State<'_, IpcState>,
+    agent: String,
+) -> IpcResult<Vec<IpcModelInfo>> {
+    // Check cache
+    if let Ok(cache) = state.model_cache.lock() {
+        if let Some(cached) = cache.get(&agent) {
+            return Ok(cached.clone());
+        }
+    }
+
+    let models = match agent.as_str() {
+        "codex"   => fetch_codex_models(),
+        "claude"  => fetch_claude_models(),
+        "copilot" => fetch_copilot_models(),
+        "dry-run" => Ok(Vec::new()),
+        _         => Ok(load_fallback_models(&agent)),
+    }
+    .unwrap_or_else(|_err| load_fallback_models(&agent));
+
+    // Cache the result
+    if let Ok(mut cache) = state.model_cache.lock() {
+        cache.insert(agent, models.clone());
+    }
+
+    Ok(models)
+}
+
+#[tauri::command]
+pub fn refresh_agent_models(
+    state: tauri::State<'_, IpcState>,
+    agent: String,
+) -> IpcResult<Vec<IpcModelInfo>> {
+    if let Ok(mut cache) = state.model_cache.lock() {
+        cache.remove(&agent);
+    }
+    list_agent_models(state, agent)
 }
 
 #[tauri::command]
@@ -561,7 +780,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        list_sample_promptbooks, pretty_model_name, resolve_sample_promptbooks_dir,
+        effort_display_name, load_fallback_models, parse_codex_model_list_response,
+        parse_copilot_help_models, pretty_model_name,
+        list_sample_promptbooks, resolve_sample_promptbooks_dir,
+        EffortLevelInfo, IpcModelInfo,
         IpcRunDetail, IpcRunRecord, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
     };
     use serde_json::json;
@@ -693,5 +915,131 @@ mod tests {
         assert_eq!(pretty_model_name("claude-sonnet-4-6"), "Claude Sonnet 4 6");
         assert_eq!(pretty_model_name("gpt-5.3-codex-spark"), "Gpt 5.3 Codex Spark");
         assert_eq!(pretty_model_name("claude-opus-4-6"), "Claude Opus 4 6");
+    }
+
+    #[test]
+    fn effort_display_name_maps_correctly() {
+        assert_eq!(effort_display_name("low"), "Low");
+        assert_eq!(effort_display_name("medium"), "Medium");
+        assert_eq!(effort_display_name("high"), "High");
+        assert_eq!(effort_display_name("xhigh"), "Extra High");
+        assert_eq!(effort_display_name("custom"), "Custom");
+    }
+
+    #[test]
+    fn fallback_models_loads_codex_entries() {
+        let models = load_fallback_models("codex");
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.id == "gpt-5.3-codex"));
+        let gpt53 = models.iter().find(|m| m.id == "gpt-5.3-codex").unwrap();
+        assert!(gpt53.is_default);
+        assert!(gpt53.effort_levels.len() >= 3);
+        assert_eq!(gpt53.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn fallback_models_loads_claude_entries() {
+        let models = load_fallback_models("claude");
+        assert_eq!(models.len(), 3);
+        let haiku = models.iter().find(|m| m.id == "haiku").unwrap();
+        assert!(haiku.effort_levels.is_empty());
+        assert!(haiku.default_effort.is_none());
+        let sonnet = models.iter().find(|m| m.id == "sonnet").unwrap();
+        assert!(sonnet.is_default);
+        assert!(!sonnet.effort_levels.is_empty());
+    }
+
+    #[test]
+    fn fallback_models_loads_copilot_entries() {
+        let models = load_fallback_models("copilot");
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.id == "claude-sonnet-4.6"));
+        assert!(models.iter().any(|m| m.id == "gpt-5.3-codex"));
+    }
+
+    #[test]
+    fn fallback_models_returns_empty_for_unknown_agent() {
+        let models = load_fallback_models("unknown-agent");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn fallback_models_dry_run_is_empty() {
+        let models = load_fallback_models("dry-run");
+        assert!(models.is_empty());
+    }
+
+    #[test]
+    fn parse_codex_model_list_response_extracts_models() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "models": [
+                    {
+                        "id": "gpt-5.3-codex",
+                        "displayName": "GPT 5.3 Codex",
+                        "isDefault": true,
+                        "defaultReasoningEffort": "medium",
+                        "reasoningEffort": ["low", "medium", "high", "xhigh"]
+                    },
+                    {
+                        "id": "gpt-5.1-codex-mini",
+                        "displayName": "GPT 5.1 Codex Mini",
+                        "isDefault": false,
+                        "defaultReasoningEffort": "medium",
+                        "reasoningEffort": ["medium", "high"]
+                    }
+                ]
+            }
+        });
+
+        let models = parse_codex_model_list_response(&response).expect("parse codex response");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gpt-5.3-codex");
+        assert!(models[0].is_default);
+        assert_eq!(models[0].effort_levels.len(), 4);
+        assert_eq!(models[0].effort_levels[3].id, "xhigh");
+        assert_eq!(models[0].effort_levels[3].name, "Extra High");
+        assert_eq!(models[1].id, "gpt-5.1-codex-mini");
+        assert!(!models[1].is_default);
+        assert_eq!(models[1].effort_levels.len(), 2);
+    }
+
+    #[test]
+    fn parse_copilot_help_extracts_model_choices() {
+        let help_text = r#"
+Usage: copilot [options] [prompt]
+
+Options:
+  --model <model>   Set the AI model to use (choices: "claude-sonnet-4.6", "claude-opus-4.6",
+                    "gpt-5.3-codex", "gpt-4.1")
+  -p, --prompt      The prompt
+"#;
+        let models = parse_copilot_help_models(help_text).expect("parse copilot help");
+        assert_eq!(models.len(), 4);
+        assert_eq!(models[0].id, "claude-sonnet-4.6");
+        assert!(models[0].is_default);
+        assert_eq!(models[1].id, "claude-opus-4.6");
+        assert!(!models[1].is_default);
+        assert_eq!(models[3].id, "gpt-4.1");
+        assert!(models.iter().all(|m| m.effort_levels.is_empty()));
+    }
+
+    #[test]
+    fn ipc_model_info_json_roundtrip() {
+        let model = IpcModelInfo {
+            id: "test-model".to_string(),
+            name: "Test Model".to_string(),
+            effort_levels: vec![
+                EffortLevelInfo { id: "low".to_string(), name: "Low".to_string() },
+                EffortLevelInfo { id: "high".to_string(), name: "High".to_string() },
+            ],
+            default_effort: Some("low".to_string()),
+            is_default: true,
+        };
+        let serialized = serde_json::to_string(&model).expect("serialize");
+        let parsed: IpcModelInfo = serde_json::from_str(&serialized).expect("deserialize");
+        assert_eq!(parsed, model);
     }
 }

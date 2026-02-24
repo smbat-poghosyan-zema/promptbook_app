@@ -42,7 +42,14 @@ export default [
     files: ["**/*.test.{ts,tsx}"],
     languageOptions: {
       globals: {
-        ...globals.vitest
+        describe: "readonly",
+        it: "readonly",
+        expect: "readonly",
+        beforeAll: "readonly",
+        beforeEach: "readonly",
+        afterAll: "readonly",
+        afterEach: "readonly",
+        vi: "readonly"
       }
     }
   },

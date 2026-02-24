@@ -566,6 +566,7 @@ pub fn run() {
             ipc::open_sample_promptbooks_folder,
             ipc::list_sample_promptbooks,
             ipc::list_agent_models,
+            ipc::refresh_agent_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

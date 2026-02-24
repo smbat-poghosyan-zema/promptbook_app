@@ -1,0 +1,222 @@
+{
+  "codex": {
+    "models": [
+      {
+        "id": "gpt-5.3-codex",
+        "name": "GPT 5.3 Codex",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" },
+          { "id": "xhigh", "name": "Extra High" }
+        ],
+        "default_effort": "medium",
+        "is_default": true
+      },
+      {
+        "id": "gpt-5.2-codex",
+        "name": "GPT 5.2 Codex",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" },
+          { "id": "xhigh", "name": "Extra High" }
+        ],
+        "default_effort": "medium",
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1-codex-max",
+        "name": "GPT 5.1 Codex Max",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" }
+        ],
+        "default_effort": "medium",
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.2",
+        "name": "GPT 5.2",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" },
+          { "id": "xhigh", "name": "Extra High" }
+        ],
+        "default_effort": "medium",
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1-codex-mini",
+        "name": "GPT 5.1 Codex Mini",
+        "effort_levels": [
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" }
+        ],
+        "default_effort": "medium",
+        "is_default": false
+      }
+    ]
+  },
+  "claude": {
+    "models": [
+      {
+        "id": "opus",
+        "name": "Claude Opus 4.6",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" }
+        ],
+        "default_effort": "high",
+        "is_default": false
+      },
+      {
+        "id": "sonnet",
+        "name": "Claude Sonnet 4.6",
+        "effort_levels": [
+          { "id": "low", "name": "Low" },
+          { "id": "medium", "name": "Medium" },
+          { "id": "high", "name": "High" }
+        ],
+        "default_effort": "high",
+        "is_default": true
+      },
+      {
+        "id": "haiku",
+        "name": "Claude Haiku 4.5",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      }
+    ]
+  },
+  "copilot": {
+    "models": [
+      {
+        "id": "claude-sonnet-4.6",
+        "name": "Claude Sonnet 4.6",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": true
+      },
+      {
+        "id": "claude-sonnet-4.5",
+        "name": "Claude Sonnet 4.5",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "claude-haiku-4.5",
+        "name": "Claude Haiku 4.5",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "claude-opus-4.6",
+        "name": "Claude Opus 4.6",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "claude-opus-4.6-fast",
+        "name": "Claude Opus 4.6 Fast",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "claude-opus-4.5",
+        "name": "Claude Opus 4.5",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "claude-sonnet-4",
+        "name": "Claude Sonnet 4",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gemini-3-pro-preview",
+        "name": "Gemini 3 Pro (Preview)",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.3-codex",
+        "name": "GPT 5.3 Codex",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.2-codex",
+        "name": "GPT 5.2 Codex",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.2",
+        "name": "GPT 5.2",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1-codex-max",
+        "name": "GPT 5.1 Codex Max",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1-codex",
+        "name": "GPT 5.1 Codex",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1",
+        "name": "GPT 5.1",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5.1-codex-mini",
+        "name": "GPT 5.1 Codex Mini",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-5-mini",
+        "name": "GPT 5 Mini",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      },
+      {
+        "id": "gpt-4.1",
+        "name": "GPT 4.1",
+        "effort_levels": [],
+        "default_effort": null,
+        "is_default": false
+      }
+    ]
+  },
+  "dry-run": {
+    "models": []
+  }
+}
