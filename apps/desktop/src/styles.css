@@ -181,23 +181,78 @@ select {
   padding: 0.45rem 0.6rem;
 }
 
+/* Status pill — all named statuses */
 .status-pill {
+  display: inline-block;
   border-radius: 999px;
-  padding: 0.1rem 0.5rem;
+  padding: 0.15rem 0.55rem;
   border: 1px solid #cbd5e1;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .status-pill.running {
   border-color: #f59e0b;
+  color: #b45309;
+  background: #fffbeb;
 }
 
 .status-pill.success {
   border-color: #16a34a;
+  color: #15803d;
+  background: #f0fdf4;
 }
 
 .status-pill.failure {
   border-color: #dc2626;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.status-pill.stopped,
+.status-pill.cancelled {
+  border-color: #94a3b8;
+  color: #475569;
+  background: #f8fafc;
+}
+
+/* Run item header: title + badge side by side */
+.run-item-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: nowrap;
+}
+
+.run-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Meta lines (agent, workspace, step info) */
+.run-item-meta {
+  font-size: 0.82rem;
+  color: #475569;
+  overflow: hidden;
+}
+
+.run-workspace,
+.run-agent,
+.run-step {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Footer (started at) */
+.run-item-footer {
+  font-size: 0.78rem;
+  color: #94a3b8;
 }
 
 .split-tabs {

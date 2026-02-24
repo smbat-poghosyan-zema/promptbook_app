@@ -2,6 +2,7 @@ import {
   applyRunEvent,
   createRunDetailViewModel,
   createRunListViewModel,
+  formatRunStatus,
   type IpcModelInfo,
   type IpcRunDetail,
   type IpcRunRecord,
@@ -57,6 +58,22 @@ function buildRunDetail(): IpcRunDetail {
     ]
   };
 }
+
+describe("formatRunStatus", () => {
+  it("maps running to in progress", () => {
+    expect(formatRunStatus("running")).toBe("in progress");
+  });
+  it("maps stopped to stopped", () => {
+    expect(formatRunStatus("stopped")).toBe("stopped");
+  });
+  it("maps success and failure to themselves", () => {
+    expect(formatRunStatus("success")).toBe("success");
+    expect(formatRunStatus("failure")).toBe("failure");
+  });
+  it("passes through unknown statuses", () => {
+    expect(formatRunStatus("pending")).toBe("pending");
+  });
+});
 
 describe("IpcModelInfo", () => {
   it("IpcModelInfo type is exported", () => {
@@ -114,9 +131,11 @@ describe("ui model", () => {
     expect(list[0]?.workspaceLine).toBe("/home/user/project");
     expect(list[0]?.stepInfo).toContain("Generate output");
     expect(list[0]?.stepInfo).toContain("3 steps");
+    expect(list[0]?.statusLabel).toBe("in progress");
     // Item with no workspace falls back to "."
     expect(list[1]?.workspaceLine).toBe(".");
     expect(list[1]?.stepInfo).toBe("");
+    expect(list[1]?.statusLabel).toBe("success");
   });
 
   it("returns empty detail model when no run is selected", () => {

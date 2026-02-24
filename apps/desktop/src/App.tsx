@@ -344,7 +344,7 @@ export function App() {
                 >
                   <div className="run-item-header">
                     <strong className="run-name">{run.title}</strong>
-                    <span className={`status-pill ${run.status}`}>{run.status}</span>
+                    <span className={`status-pill ${run.status}`}>{run.statusLabel}</span>
                   </div>
                   <div className="run-item-meta">
                     <span className="run-version">{run.subtitle}</span>

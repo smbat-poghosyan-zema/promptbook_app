@@ -68,13 +68,25 @@ export type RunEventEnvelope = {
   payload: Record<string, unknown>;
 };
 
+export function formatRunStatus(status: string): string {
+  switch (status) {
+    case "running": return "in progress";
+    case "stopped":
+    case "cancelled": return "stopped";
+    case "success": return "success";
+    case "failure": return "failure";
+    default: return status;
+  }
+}
+
 export type RunListItemViewModel = {
   id: number;
   title: string;
   subtitle: string;
   agentLine: string;
   workspaceLine: string;
-  status: string;
+  status: string;          // raw (for CSS class)
+  statusLabel: string;     // human-readable (for display)
   startedAt: string;
   stepInfo: string;
 };
@@ -142,6 +154,7 @@ export function createRunListViewModel(runs: IpcRunRecord[]): RunListItemViewMod
         agentLine: agentParts.join(" / "),
         workspaceLine: run.workspace_dir ?? ".",
         status: run.status,
+        statusLabel: formatRunStatus(run.status),
         startedAt: formatDateTime(run.started_at),
         stepInfo
       };
