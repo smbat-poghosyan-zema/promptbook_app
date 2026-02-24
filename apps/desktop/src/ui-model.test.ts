@@ -20,7 +20,10 @@ function buildRunDetail(): IpcRunDetail {
       agent_default: "dry-run",
       metadata_json: null,
       model: null,
-      effort_level: null
+      effort_level: null,
+      workspace_dir: null,
+      step_count: 0,
+      current_step_title: null
     },
     steps: [
       {
@@ -79,7 +82,10 @@ describe("ui model", () => {
         agent_default: null,
         metadata_json: null,
         model: null,
-        effort_level: null
+        effort_level: null,
+        workspace_dir: null,
+        step_count: 0,
+        current_step_title: null
       },
       {
         id: 2,
@@ -88,16 +94,29 @@ describe("ui model", () => {
         status: "running",
         started_at: "2026-02-21T00:00:00Z",
         finished_at: null,
-        agent_default: null,
+        agent_default: "claude",
         metadata_json: null,
-        model: null,
-        effort_level: null
+        model: "claude-sonnet-4-6",
+        effort_level: "medium",
+        workspace_dir: "/home/user/project",
+        step_count: 3,
+        current_step_title: "Generate output"
       }
     ];
 
     const list = createRunListViewModel(runs);
     expect(list[0]?.id).toBe(2);
     expect(list[1]?.id).toBe(1);
+    // Check richer fields on the first item
+    expect(list[0]?.title).toBe("new");
+    expect(list[0]?.subtitle).toBe("v1.1.0");
+    expect(list[0]?.agentLine).toBe("claude / claude-sonnet-4-6 / medium");
+    expect(list[0]?.workspaceLine).toBe("/home/user/project");
+    expect(list[0]?.stepInfo).toContain("Generate output");
+    expect(list[0]?.stepInfo).toContain("3 steps");
+    // Item with no workspace falls back to "."
+    expect(list[1]?.workspaceLine).toBe(".");
+    expect(list[1]?.stepInfo).toBe("");
   });
 
   it("returns empty detail model when no run is selected", () => {

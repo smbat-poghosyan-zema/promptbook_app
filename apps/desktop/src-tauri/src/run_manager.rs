@@ -236,6 +236,7 @@ fn prepare_run(
     let run_started_at = now_timestamp();
     let metadata = json!({
         "promptbook_path": promptbook_path,
+        "workspace_dir": workspace_dir,
         "model": model,
         "effort_level": effort_level,
     });

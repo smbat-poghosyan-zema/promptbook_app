@@ -73,6 +73,8 @@ pub struct RunRecord {
     pub finished_at: Option<String>,
     pub agent_default: Option<String>,
     pub metadata_json: Option<String>,
+    pub step_count: i64,
+    pub current_step_title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,9 +382,14 @@ impl StorageRepository {
     pub fn list_runs(&self) -> StorageResult<Vec<RunRecord>> {
         let mut stmt = self.conn.prepare(
             "
-            SELECT id, promptbook_name, promptbook_version, status, started_at, finished_at, agent_default, metadata_json
-            FROM runs
-            ORDER BY started_at DESC, id DESC
+            SELECT r.id, r.promptbook_name, r.promptbook_version, r.status, r.started_at,
+                   r.finished_at, r.agent_default, r.metadata_json,
+                   COUNT(s.id) AS step_count,
+                   (SELECT s2.title FROM steps s2 WHERE s2.run_id = r.id AND s2.status = 'running' ORDER BY s2.id DESC LIMIT 1) AS current_step_title
+            FROM runs r
+            LEFT JOIN steps s ON s.run_id = r.id
+            GROUP BY r.id
+            ORDER BY r.started_at DESC, r.id DESC
             ",
         )?;
 
@@ -396,6 +403,8 @@ impl StorageRepository {
                 finished_at: row.get(5)?,
                 agent_default: row.get(6)?,
                 metadata_json: row.get(7)?,
+                step_count: row.get(8)?,
+                current_step_title: row.get(9)?,
             })
         })?;
 
@@ -422,6 +431,8 @@ impl StorageRepository {
                         finished_at: row.get(5)?,
                         agent_default: row.get(6)?,
                         metadata_json: row.get(7)?,
+                        step_count: 0,
+                        current_step_title: None,
                     })
                 },
             )
@@ -579,6 +590,8 @@ mod tests {
         assert_eq!(runs[0].id, run_id);
         assert_eq!(runs[0].promptbook_name, "hello-world");
         assert_eq!(runs[0].status, "running");
+        assert_eq!(runs[0].step_count, 0);
+        assert_eq!(runs[0].current_step_title, None);
 
         drop(repo);
         let _ = fs::remove_file(db_path);

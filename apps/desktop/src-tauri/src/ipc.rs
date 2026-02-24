@@ -25,6 +25,9 @@ pub struct IpcRunRecord {
     pub metadata_json: Option<String>,
     pub model: Option<String>,
     pub effort_level: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub step_count: i64,
+    pub current_step_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -171,17 +174,33 @@ impl Default for IpcState {
     }
 }
 
-fn parse_model_effort_from_metadata(metadata: Option<&str>) -> (Option<String>, Option<String>) {
-    let Some(json) = metadata else { return (None, None) };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else { return (None, None) };
-    let model = value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned);
-    let effort = value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned);
-    (model, effort)
+struct RunMetadata {
+    model: Option<String>,
+    effort_level: Option<String>,
+    workspace_dir: Option<String>,
+}
+
+impl Default for RunMetadata {
+    fn default() -> Self {
+        Self { model: None, effort_level: None, workspace_dir: None }
+    }
+}
+
+fn parse_run_metadata(metadata: Option<&str>) -> RunMetadata {
+    let Some(json) = metadata else { return RunMetadata::default() };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return RunMetadata::default();
+    };
+    RunMetadata {
+        model: value.get("model").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+        effort_level: value.get("effort_level").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+        workspace_dir: value.get("workspace_dir").and_then(|v| v.as_str()).map(ToOwned::to_owned),
+    }
 }
 
 impl From<RunRecord> for IpcRunRecord {
     fn from(value: RunRecord) -> Self {
-        let (model, effort_level) = parse_model_effort_from_metadata(value.metadata_json.as_deref());
+        let meta = parse_run_metadata(value.metadata_json.as_deref());
         Self {
             id: value.id,
             promptbook_name: value.promptbook_name,
@@ -191,8 +210,11 @@ impl From<RunRecord> for IpcRunRecord {
             finished_at: value.finished_at,
             agent_default: value.agent_default,
             metadata_json: value.metadata_json,
-            model,
-            effort_level,
+            model: meta.model,
+            effort_level: meta.effort_level,
+            workspace_dir: meta.workspace_dir,
+            step_count: value.step_count,
+            current_step_title: value.current_step_title,
         }
     }
 }
@@ -547,6 +569,9 @@ mod tests {
                 metadata_json: Some("{\"k\":\"v\"}".to_string()),
                 model: None,
                 effort_level: None,
+                workspace_dir: None,
+                step_count: 0,
+                current_step_title: None,
             },
             steps: Vec::new(),
             logs: Vec::new(),

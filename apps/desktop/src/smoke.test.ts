@@ -26,7 +26,12 @@ describe("shared schema smoke", () => {
         started_at: "2026-02-21T00:00:00Z",
         finished_at: null,
         agent_default: "codex",
-        metadata_json: null
+        metadata_json: null,
+        model: null,
+        effort_level: null,
+        workspace_dir: null,
+        step_count: 0,
+        current_step_title: null
       },
       {
         id: 102,
@@ -36,15 +41,20 @@ describe("shared schema smoke", () => {
         started_at: "2026-02-21T00:05:00Z",
         finished_at: "2026-02-21T00:06:00Z",
         agent_default: "claude",
-        metadata_json: null
+        metadata_json: null,
+        model: null,
+        effort_level: null,
+        workspace_dir: "/home/user/project",
+        step_count: 2,
+        current_step_title: null
       }
     ];
 
     const viewModel = createRunListViewModel(runs);
 
     expect(viewModel.length).toBe(2);
-    expect(viewModel.some((item) => item.subtitle.includes("running"))).toBe(true);
-    expect(viewModel.some((item) => item.subtitle.includes("2026-02-21T00:05:00Z"))).toBe(true);
+    expect(viewModel.some((item) => item.status === "running")).toBe(true);
+    expect(viewModel.some((item) => item.workspaceLine === "/home/user/project")).toBe(true);
   });
 
   it("Run detail shows split views with mock events", () => {
@@ -57,7 +67,12 @@ describe("shared schema smoke", () => {
         started_at: "2026-02-21T00:00:00Z",
         finished_at: null,
         agent_default: "codex",
-        metadata_json: null
+        metadata_json: null,
+        model: null,
+        effort_level: null,
+        workspace_dir: null,
+        step_count: 0,
+        current_step_title: null
       },
       steps: [
         {

@@ -321,8 +321,29 @@ export function App() {
                   }`}
                   onClick={() => setSelectedRunId(run.id)}
                 >
-                  <strong>{run.title}</strong>
-                  <span>{run.subtitle}</span>
+                  <div className="run-item-header">
+                    <strong className="run-name">{run.title}</strong>
+                    <span className={`status-pill ${run.status}`}>{run.status}</span>
+                  </div>
+                  <div className="run-item-meta">
+                    <span className="run-version">{run.subtitle}</span>
+                  </div>
+                  {run.agentLine && (
+                    <div className="run-item-meta">
+                      <span className="run-agent">{run.agentLine}</span>
+                    </div>
+                  )}
+                  <div className="run-item-meta">
+                    <span className="run-workspace" title={run.workspaceLine}>{run.workspaceLine}</span>
+                  </div>
+                  {run.stepInfo && (
+                    <div className="run-item-meta">
+                      <span className="run-step">{run.stepInfo}</span>
+                    </div>
+                  )}
+                  <div className="run-item-footer">
+                    <span className="run-started">{run.startedAt}</span>
+                  </div>
                 </button>
               </li>
             ))}

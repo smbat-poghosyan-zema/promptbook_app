@@ -9,6 +9,9 @@ export type IpcRunRecord = {
   metadata_json: string | null;
   model: string | null;
   effort_level: string | null;
+  workspace_dir: string | null;
+  step_count: number;
+  current_step_title: string | null;
 };
 
 export type IpcModelInfo = {
@@ -69,7 +72,11 @@ export type RunListItemViewModel = {
   id: number;
   title: string;
   subtitle: string;
+  agentLine: string;
+  workspaceLine: string;
   status: string;
+  startedAt: string;
+  stepInfo: string;
 };
 
 export type RunDetailViewModel = {
@@ -97,15 +104,52 @@ function readString(payload: Record<string, unknown>, key: string): string | nul
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function formatDateTime(ts: string | null): string {
+  if (!ts) return "—";
+  let date: Date;
+  if (/^\d+\.\d+Z$/.test(ts)) {
+    date = new Date(parseFloat(ts) * 1000);
+  } else {
+    date = new Date(ts);
+  }
+  if (isNaN(date.getTime())) return ts;
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
 export function createRunListViewModel(runs: IpcRunRecord[]): RunListItemViewModel[] {
   return [...runs]
     .sort((left, right) => right.started_at.localeCompare(left.started_at))
-    .map((run) => ({
-      id: run.id,
-      title: `${run.promptbook_name} v${run.promptbook_version}`,
-      subtitle: `${run.status} - ${run.started_at}`,
-      status: run.status
-    }));
+    .map((run) => {
+      const agent = run.agent_default ?? "—";
+      const model = run.model ?? "";
+      const effort = run.effort_level ?? "";
+      const agentParts = [agent, model, effort].filter(Boolean);
+      const stepCount = run.step_count;
+      let stepInfo = "";
+      if (stepCount > 0) {
+        if (run.current_step_title) {
+          stepInfo = `${run.current_step_title} (${stepCount} step${stepCount !== 1 ? "s" : ""})`;
+        } else {
+          stepInfo = `${stepCount} step${stepCount !== 1 ? "s" : ""}`;
+        }
+      }
+      return {
+        id: run.id,
+        title: run.promptbook_name,
+        subtitle: `v${run.promptbook_version}`,
+        agentLine: agentParts.join(" / "),
+        workspaceLine: run.workspace_dir ?? ".",
+        status: run.status,
+        startedAt: formatDateTime(run.started_at),
+        stepInfo
+      };
+    });
 }
 
 export function createRunDetailViewModel(
