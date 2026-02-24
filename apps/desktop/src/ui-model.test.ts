@@ -2,6 +2,7 @@ import {
   applyRunEvent,
   createRunDetailViewModel,
   createRunListViewModel,
+  type IpcModelInfo,
   type IpcRunDetail,
   type IpcRunRecord,
   type RunEventEnvelope
@@ -53,6 +54,17 @@ function buildRunDetail(): IpcRunDetail {
     ]
   };
 }
+
+describe("IpcModelInfo", () => {
+  it("IpcModelInfo type is exported", () => {
+    const model: IpcModelInfo = {
+      id: "claude-sonnet-4-6",
+      name: "Claude Sonnet 4.6",
+      supports_effort: true,
+    };
+    expect(model.supports_effort).toBe(true);
+  });
+});
 
 describe("ui model", () => {
   it("sorts runs by started_at descending", () => {

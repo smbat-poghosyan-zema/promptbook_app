@@ -5,6 +5,7 @@ import {
   applyRunEvent,
   createRunDetailViewModel,
   createRunListViewModel,
+  type IpcModelInfo,
   type IpcRunDetail,
   type IpcRunRecord,
   type RunEventEnvelope
@@ -21,6 +22,8 @@ type Toast = {
 type DashboardForm = {
   promptbookPath: string;
   agent: string;
+  model: string;
+  effortLevel: string;
   workspaceDir: string;
 };
 
@@ -53,8 +56,11 @@ export function App() {
   const [dashboard, setDashboard] = useState<DashboardForm>({
     promptbookPath: "",
     agent: "codex",
+    model: "",
+    effortLevel: "medium",
     workspaceDir: "."
   });
+  const [availableModels, setAvailableModels] = useState<IpcModelInfo[]>([]);
   const [isLoadingRuns, setIsLoadingRuns] = useState(true);
   const [isLoadingRunDetail, setIsLoadingRunDetail] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
@@ -67,6 +73,9 @@ export function App() {
     () => createRunDetailViewModel(runDetail, selectedOutputStepId),
     [runDetail, selectedOutputStepId]
   );
+
+  const selectedModelInfo = availableModels.find((m) => m.id === dashboard.model) ?? null;
+  const supportsEffort = selectedModelInfo?.supports_effort ?? false;
 
   function pushToast(message: string, variant: ToastVariant = "error"): void {
     setToasts((current) => [
@@ -127,6 +136,18 @@ export function App() {
     void loadRuns();
     void loadSamplePromptbooks();
   }, []);
+
+  useEffect(() => {
+    invoke<IpcModelInfo[]>("list_agent_models", { agent: dashboard.agent })
+      .then((models) => {
+        setAvailableModels(models);
+        const currentExists = models.some((m) => m.id === dashboard.model);
+        if (!currentExists) {
+          setDashboard((d) => ({ ...d, model: models[0]?.id ?? "" }));
+        }
+      })
+      .catch(() => setAvailableModels([]));
+  }, [dashboard.agent]);
 
   useEffect(() => {
     if (samplePromptbooks.length === 0) {
@@ -259,6 +280,8 @@ export function App() {
       const runId = await invoke<number>("start_run", {
         promptbookPath: dashboard.promptbookPath,
         agent: dashboard.agent,
+        model: dashboard.model || null,
+        effortLevel: dashboard.effortLevel && supportsEffort ? dashboard.effortLevel : null,
         workspaceDir: dashboard.workspaceDir
       });
       await loadRuns();
@@ -377,6 +400,36 @@ export function App() {
                 ))}
               </select>
             </label>
+
+            {availableModels.length > 0 && (
+              <label>
+                Model
+                <select
+                  value={dashboard.model}
+                  onChange={(event) => updateDashboardField("model", event.target.value)}
+                >
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {supportsEffort && (
+              <label>
+                Effort level
+                <select
+                  value={dashboard.effortLevel}
+                  onChange={(event) => updateDashboardField("effortLevel", event.target.value)}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </label>
+            )}
 
             <label>
               Workspace directory
