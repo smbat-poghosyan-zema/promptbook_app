@@ -101,6 +101,24 @@ This session built out the complete Promptbook Runner desktop application (Tauri
 
 ---
 
+## Round 3 UX (ux-round3 v1.0.0)
+
+**Date:** 2026-02-24
+
+### Changes
+- Agent/Model/Effort selectors on one horizontal row
+- Dynamic model list from `openclaw models --status-json` (nothing hardcoded)
+- Run Detail: all steps visible upfront (pending steps shown), expandable prompts
+- Step player buttons: ■ stop / ▶ resume / ✓ done / ▶ queued
+- Resume bug fixed: resumes existing run in-place, no duplicate Runs entry
+
+### Final test counts
+- TypeScript: 37 passed (packages/shared: 12, apps/desktop: 25)
+- Rust: 24 passed
+- Lint: 0 errors
+
+---
+
 ## Coverage Gaps / Known Limitations
 
 - Frontend interaction testing remains lightweight (render + view-model logic only); no full DOM click/type/async UI interaction flows.
