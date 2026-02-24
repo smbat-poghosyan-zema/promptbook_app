@@ -85,6 +85,10 @@ impl AgentAdapter for CodexAdapter {
             args.push("--model".to_string());
             args.push(model.clone());
         }
+        if let Some(ref effort) = options.effort_level {
+            args.push("-c".to_string());
+            args.push(format!("model_reasoning_effort=\"{}\"", effort));
+        }
         args.push(instruction);
 
         CommandSpec::new("codex", args, Some(PathBuf::from(workspace_dir)))
@@ -209,15 +213,41 @@ pub struct ModelInfo {
 pub fn models_for_agent(agent_name: &str) -> Vec<ModelInfo> {
     match agent_name {
         "claude" => vec![
-            ModelInfo { id: "claude-opus-4-5".into(), name: "Claude Opus 4.5".into(), supports_effort: true },
-            ModelInfo { id: "claude-sonnet-4-5".into(), name: "Claude Sonnet 4.5".into(), supports_effort: true },
-            ModelInfo { id: "claude-sonnet-4-6".into(), name: "Claude Sonnet 4.6".into(), supports_effort: true },
-            ModelInfo { id: "claude-haiku-3-5".into(), name: "Claude Haiku 3.5".into(), supports_effort: false },
+            ModelInfo {
+                id: "claude-opus-4-6".into(),
+                name: "Claude Opus 4.6".into(),
+                supports_effort: true,
+            },
+            ModelInfo {
+                id: "claude-sonnet-4-6".into(),
+                name: "Claude Sonnet 4.6".into(),
+                supports_effort: true,
+            },
+            ModelInfo {
+                id: "claude-haiku-4-5".into(),
+                name: "Claude Haiku 4.5".into(),
+                supports_effort: true,
+            },
         ],
         "codex" => vec![
-            ModelInfo { id: "o4-mini".into(), name: "o4-mini".into(), supports_effort: true },
-            ModelInfo { id: "o3".into(), name: "o3".into(), supports_effort: true },
+            ModelInfo {
+                id: "gpt-5.3-codex".into(),
+                name: "GPT-5.3 Codex (latest)".into(),
+                supports_effort: true,
+            },
+            ModelInfo {
+                id: "gpt-5.2-codex".into(),
+                name: "GPT-5.2 Codex".into(),
+                supports_effort: true,
+            },
+            ModelInfo {
+                id: "o3".into(),
+                name: "o3".into(),
+                supports_effort: true,
+            },
         ],
+        // Copilot CLI is not installed; no model selection supported.
+        // dry-run needs no model selection either.
         _ => vec![],
     }
 }
@@ -324,14 +354,33 @@ mod tests {
     }
 
     #[test]
-    fn models_for_agent_returns_claude_models_with_effort_support() {
+    fn models_for_agent_returns_correct_claude_models() {
         use super::models_for_agent;
         let models = models_for_agent("claude");
-        assert!(models.len() >= 2, "expected at least 2 claude models");
-        let supports_effort_count = models.iter().filter(|m| m.supports_effort).count();
-        assert!(
-            supports_effort_count >= 2,
-            "expected at least 2 claude models with supports_effort=true, got: {supports_effort_count}"
-        );
+        assert_eq!(models.len(), 3);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"claude-opus-4-6"));
+        assert!(ids.contains(&"claude-sonnet-4-6"));
+        assert!(ids.contains(&"claude-haiku-4-5"));
+        assert!(models.iter().all(|m| m.supports_effort));
+    }
+
+    #[test]
+    fn models_for_agent_returns_correct_codex_models() {
+        use super::models_for_agent;
+        let models = models_for_agent("codex");
+        assert_eq!(models.len(), 3);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"gpt-5.3-codex"));
+        assert!(ids.contains(&"gpt-5.2-codex"));
+        assert!(ids.contains(&"o3"));
+        assert!(models.iter().all(|m| m.supports_effort));
+    }
+
+    #[test]
+    fn models_for_agent_returns_empty_for_copilot_and_dry_run() {
+        use super::models_for_agent;
+        assert!(models_for_agent("copilot").is_empty());
+        assert!(models_for_agent("dry-run").is_empty());
     }
 }
