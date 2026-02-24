@@ -492,26 +492,6 @@ export function App() {
         <section className="panel run-detail">
           <header className="panel-header">
             <h2>Run Detail</h2>
-            <div className="run-detail-actions">
-              {runDetail && runDetail.run.status === "running" && (
-                <button
-                  type="button"
-                  className="danger-action"
-                  onClick={() => void handleStopRun()}
-                >
-                  Stop
-                </button>
-              )}
-              {runDetail && runDetail.run.status === "failure" && (
-                <button
-                  type="button"
-                  className="secondary-action"
-                  onClick={() => void handleResumeRun()}
-                >
-                  Resume from failed step
-                </button>
-              )}
-            </div>
           </header>
 
           {selectedRunId === null ? (
@@ -527,15 +507,44 @@ export function App() {
                   <li className="empty-state">No steps recorded yet.</li>
                 ) : (
                   detailViewModel.stepRows.map((step) => (
-                    <li key={step.stepId} className={`step-row ${step.isActive ? "is-active" : ""}`}>
+                    <li key={step.stepId}
+                        className={`step-row ${step.isActive ? "is-active" : ""} ${step.status}`}>
+
+                      {/* Clickable area: selects this step's output pane */}
                       <button
                         type="button"
-                        className="step-row-btn"
+                        className="step-row-select"
                         onClick={() => setActiveStepId(step.stepId)}
+                        aria-label={`View step ${step.stepNumber}: ${step.title}`}
                       >
+                        <span className="step-number-badge">STEP {step.stepNumber}</span>
                         <span className="step-title">{step.title}</span>
-                        <span className={`status-pill ${step.status}`}>{step.status}</span>
+                        <span className="step-filler" aria-hidden="true" />
+                        <span className={`status-pill ${step.status}`}>{step.statusLabel}</span>
                       </button>
+
+                      {/* Action buttons — only shown when relevant */}
+                      {step.status === "running" && (
+                        <button
+                          type="button"
+                          className="step-action-btn danger-action"
+                          onClick={() => void handleStopRun()}
+                          title="Stop this step"
+                        >
+                          Stop
+                        </button>
+                      )}
+                      {(step.status === "failure" || step.status === "stopped") &&
+                       runDetail?.run.status !== "running" && (
+                        <button
+                          type="button"
+                          className="step-action-btn secondary-action"
+                          onClick={() => void handleResumeRun()}
+                          title="Resume from this step"
+                        >
+                          Resume
+                        </button>
+                      )}
                     </li>
                   ))
                 )}

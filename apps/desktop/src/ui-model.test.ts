@@ -173,6 +173,21 @@ describe("ui model", () => {
     expect(viewModel.stepRows[1]?.status).toBe("next");
   });
 
+  it("assigns 1-based stepNumber and statusLabel to each step row", () => {
+    const detail: IpcRunDetail = {
+      ...buildRunDetail(),
+      steps: [
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null },
+        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+      ]
+    };
+    const viewModel = createRunDetailViewModel(detail, "step-1");
+    expect(viewModel.stepRows[0]?.stepNumber).toBe(1);
+    expect(viewModel.stepRows[1]?.stepNumber).toBe(2);
+    expect(viewModel.stepRows[0]?.statusLabel).toBe("in progress");
+    expect(viewModel.stepRows[1]?.statusLabel).toBe("next");
+  });
+
   it("marks step at index 1 as 'next' when step at index 0 is running, via activeStepId=null", () => {
     const detail: IpcRunDetail = {
       ...buildRunDetail(),

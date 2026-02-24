@@ -94,7 +94,9 @@ export type RunListItemViewModel = {
 export type StepViewModel = {
   stepId: string;
   title: string;
-  status: string;
+  status: string;           // raw internal status
+  statusLabel: string;      // human-readable (reuse formatRunStatus)
+  stepNumber: number;       // 1-based index
   isActive: boolean;
   liveLines: string[];
   finalOutput: string | null;
@@ -188,7 +190,7 @@ export function createRunDetailViewModel(
       ? detail.steps[runningIdx + 1].step_id
       : null;
 
-  const stepRows: StepViewModel[] = detail.steps.map((step) => {
+  const stepRows: StepViewModel[] = detail.steps.map((step, idx) => {
     const isNext = step.step_id === nextStepId;
     const displayStatus = isNext ? "next" : step.status;
     const logs = logsByStep.get(step.step_id) ?? [];
@@ -197,6 +199,8 @@ export function createRunDetailViewModel(
       stepId: step.step_id,
       title: step.title,
       status: displayStatus,
+      statusLabel: formatRunStatus(displayStatus),
+      stepNumber: idx + 1,
       isActive: step.step_id === activeStepId,
       liveLines: logs.map((l) => `[${l.stream}] ${l.line}`),
       finalOutput: output?.content ?? null
