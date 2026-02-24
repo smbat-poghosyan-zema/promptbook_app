@@ -6,6 +6,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use tauri::Manager;
 
 const DB_FILENAME: &str = "promptbook-runner.sqlite3";
 static DB_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -505,6 +506,32 @@ impl StorageRepository {
 
 pub fn placeholder_engine_value(value: i32) -> i32 {
     value + 1
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .setup(|app| {
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".promptbook_runs"));
+            let emitter = std::sync::Arc::new(ipc::TauriRunEventEmitter::new(app.handle().clone()));
+            let state = ipc::IpcState::with_emitter_and_data_dir(emitter, &app_data_dir);
+            app.manage(state);
+            Ok(())
+        })
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            ipc::list_runs,
+            ipc::get_run_detail,
+            ipc::start_run,
+            ipc::cancel_run,
+            ipc::open_file_picker_for_promptbook,
+            ipc::open_sample_promptbooks_folder,
+            ipc::list_sample_promptbooks,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 #[cfg(test)]

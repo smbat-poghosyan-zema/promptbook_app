@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter};
 
 use crate::{
     cancel_run as cancel_run_sync, start_run_background, LogRecord, OutputRecord, RunDetail,
@@ -95,6 +96,25 @@ impl RunEventEmitter for NoopRunEventEmitter {
 }
 
 #[derive(Clone)]
+pub struct TauriRunEventEmitter {
+    app_handle: AppHandle,
+}
+
+impl TauriRunEventEmitter {
+    pub fn new(app_handle: AppHandle) -> Self {
+        Self { app_handle }
+    }
+}
+
+impl RunEventEmitter for TauriRunEventEmitter {
+    fn emit_run_event(&self, event: RunEventEnvelope) -> IpcResult<()> {
+        self.app_handle
+            .emit(RUN_EVENT_NAME, &event)
+            .map_err(|err| err.to_string())
+    }
+}
+
+#[derive(Clone)]
 pub struct IpcState {
     app_data_dir: Arc<Mutex<Option<PathBuf>>>,
     event_emitter: Arc<dyn RunEventEmitter>,
@@ -108,6 +128,13 @@ impl IpcState {
     pub fn with_emitter(event_emitter: Arc<dyn RunEventEmitter>) -> Self {
         Self {
             app_data_dir: Arc::new(Mutex::new(None)),
+            event_emitter,
+        }
+    }
+
+    pub fn with_emitter_and_data_dir(event_emitter: Arc<dyn RunEventEmitter>, app_data_dir: &Path) -> Self {
+        Self {
+            app_data_dir: Arc::new(Mutex::new(Some(app_data_dir.to_path_buf()))),
             event_emitter,
         }
     }
@@ -205,16 +232,16 @@ impl From<RunDetail> for IpcRunDetail {
     }
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
-pub fn list_runs(state: &IpcState) -> IpcResult<Vec<IpcRunRecord>> {
+#[tauri::command]
+pub fn list_runs(state: tauri::State<'_, IpcState>) -> IpcResult<Vec<IpcRunRecord>> {
     let repo = StorageRepository::open_in_app_data_dir(&state.resolve_app_data_dir())
         .map_err(|err| err.to_string())?;
     let runs = repo.list_runs().map_err(|err| err.to_string())?;
     Ok(runs.into_iter().map(IpcRunRecord::from).collect())
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
-pub fn get_run_detail(state: &IpcState, run_id: i64) -> IpcResult<Option<IpcRunDetail>> {
+#[tauri::command]
+pub fn get_run_detail(state: tauri::State<'_, IpcState>, run_id: i64) -> IpcResult<Option<IpcRunDetail>> {
     let repo = StorageRepository::open_in_app_data_dir(&state.resolve_app_data_dir())
         .map_err(|err| err.to_string())?;
     let detail = repo
@@ -223,38 +250,38 @@ pub fn get_run_detail(state: &IpcState, run_id: i64) -> IpcResult<Option<IpcRunD
     Ok(detail.map(IpcRunDetail::from))
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
+#[tauri::command]
 pub fn start_run(
-    state: &IpcState,
-    promptbook_path: &str,
-    agent: Option<&str>,
-    workspace_dir: &str,
+    state: tauri::State<'_, IpcState>,
+    promptbook_path: String,
+    agent: Option<String>,
+    workspace_dir: String,
 ) -> IpcResult<i64> {
-    state.set_workspace_dir(workspace_dir);
+    state.set_workspace_dir(&workspace_dir);
     let emitter = Arc::clone(&state.event_emitter);
     let callback = Arc::new(move |event: RunEvent| {
         let _ = emitter.emit_run_event(map_run_event(event));
     });
-    start_run_background(promptbook_path, agent, workspace_dir, Some(callback))
+    start_run_background(&promptbook_path, agent.as_deref(), &workspace_dir, Some(callback))
         .map_err(|err| err.to_string())
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
+#[tauri::command]
 pub fn cancel_run(run_id: i64) -> IpcResult<bool> {
     cancel_run_sync(run_id).map_err(|err| err.to_string())
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
-pub fn open_file_picker_for_promptbook() -> IpcResult<Option<String>> {
-    let configured = std::env::var("PROMPTBOOK_PATH").ok();
-    let Some(path) = configured else {
-        return Ok(None);
-    };
-    if Path::new(&path).exists() {
-        Ok(Some(path))
-    } else {
-        Ok(None)
-    }
+#[tauri::command]
+pub async fn open_file_picker_for_promptbook(
+    app_handle: tauri::AppHandle,
+) -> IpcResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    let path = app_handle
+        .dialog()
+        .file()
+        .add_filter("Promptbook YAML", &["yaml", "yml"])
+        .blocking_pick_file();
+    Ok(path.map(|p| p.to_string()))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -274,22 +301,24 @@ fn resolve_sample_promptbooks_dir() -> IpcResult<PathBuf> {
 
     let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
     for ancestor in cwd.ancestors() {
-        let candidate = ancestor.join("sample-promptbooks");
-        if candidate.is_dir() {
-            return Ok(candidate);
+        for dir_name in &["promptbooks", "sample-promptbooks"] {
+            let candidate = ancestor.join(dir_name);
+            if candidate.is_dir() {
+                return Ok(candidate);
+            }
         }
     }
 
-    Err("sample-promptbooks directory not found".to_string())
+    Err("promptbooks directory not found — set PROMPTBOOK_SAMPLE_DIR or create a 'promptbooks' folder".to_string())
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
+#[tauri::command]
 pub fn open_sample_promptbooks_folder() -> IpcResult<String> {
     let sample_dir = resolve_sample_promptbooks_dir()?;
     Ok(sample_dir.to_string_lossy().to_string())
 }
 
-#[cfg_attr(feature = "tauri", tauri::command)]
+#[tauri::command]
 pub fn list_sample_promptbooks() -> IpcResult<Vec<IpcSamplePromptbook>> {
     let sample_dir = resolve_sample_promptbooks_dir()?;
     let mut samples: Vec<IpcSamplePromptbook> = std::fs::read_dir(&sample_dir)
@@ -379,13 +408,63 @@ fn map_run_event(event: RunEvent) -> RunEventEnvelope {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        cancel_run, get_run_detail, list_runs, list_sample_promptbooks,
-        open_file_picker_for_promptbook, open_sample_promptbooks_folder, start_run, IpcResult,
-        IpcRunDetail, IpcRunRecord, IpcSamplePromptbook, IpcState, RunEventEnvelope, RunEventType,
-        RUN_EVENT_NAME,
+        list_sample_promptbooks, open_sample_promptbooks_folder,
+        IpcRunDetail, IpcRunRecord, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
     };
     use serde_json::json;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[derive(Debug)]
+    struct EnvVarGuard {
+        key: &'static str,
+        previous_value: Option<String>,
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous_value {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    fn set_env_var(key: &'static str, value: Option<&str>) -> EnvVarGuard {
+        let previous_value = std::env::var(key).ok();
+        match value {
+            Some(new_value) => std::env::set_var(key, new_value),
+            None => std::env::remove_var(key),
+        }
+        EnvVarGuard {
+            key,
+            previous_value,
+        }
+    }
+
+    fn temp_dir(test_name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time moved backwards")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "promptbook-ipc-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).expect("create temp dir");
+        directory
+    }
+
+    // open_file_picker_for_promptbook now uses tauri_plugin_dialog and requires
+    // a live AppHandle; it cannot be tested in unit tests.
 
     #[test]
     fn run_event_envelope_json_roundtrip() {
@@ -429,14 +508,30 @@ mod tests {
     }
 
     #[test]
-    fn command_signatures_compile() {
-        let _list_runs: fn(&IpcState) -> IpcResult<Vec<IpcRunRecord>> = list_runs;
-        let _get_run_detail: fn(&IpcState, i64) -> IpcResult<Option<IpcRunDetail>> = get_run_detail;
-        let _start_run: fn(&IpcState, &str, Option<&str>, &str) -> IpcResult<i64> = start_run;
-        let _cancel_run: fn(i64) -> IpcResult<bool> = cancel_run;
-        let _picker: fn() -> IpcResult<Option<String>> = open_file_picker_for_promptbook;
-        let _open_samples_folder: fn() -> IpcResult<String> = open_sample_promptbooks_folder;
-        let _sample_list: fn() -> IpcResult<Vec<IpcSamplePromptbook>> = list_sample_promptbooks;
+    fn run_event_name_is_correct() {
         assert_eq!(RUN_EVENT_NAME, "run_event");
+    }
+
+    #[test]
+    fn sample_promptbook_listing_filters_and_sorts_v1_yaml_files() {
+        let _guard = env_lock().lock().expect("env lock");
+        let temp = temp_dir("sample-list");
+        fs::write(temp.join("repo-audit.v1.yaml"), "schema_version: \"promptbook/v1\"")
+            .expect("write sample");
+        fs::write(temp.join("hello-world.v1.yaml"), "schema_version: \"promptbook/v1\"")
+            .expect("write sample");
+        fs::write(temp.join("ignore.txt"), "ignore").expect("write noise file");
+
+        let _sample_guard = set_env_var("PROMPTBOOK_SAMPLE_DIR", Some(&temp.to_string_lossy()));
+
+        let folder = open_sample_promptbooks_folder().expect("resolve sample folder");
+        assert_eq!(folder, temp.to_string_lossy());
+
+        let samples = list_sample_promptbooks().expect("list samples");
+        let sample_ids = samples.iter().map(|sample| sample.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(sample_ids, vec!["hello-world", "repo-audit"]);
+        assert!(samples.iter().all(|sample| sample.path.ends_with(".v1.yaml")));
+
+        let _ = fs::remove_dir_all(temp);
     }
 }
