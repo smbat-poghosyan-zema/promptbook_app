@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.promptbook.runner",
   "build": {
-    "beforeDevCommand": "pnpm --dir .. vite dev --port 1420",
-    "beforeBuildCommand": "pnpm --dir .. vite build",
+    "beforeDevCommand": "./node_modules/.bin/vite dev --port 1420",
+    "beforeBuildCommand": "./node_modules/.bin/vite build",
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"
   },
@@ -14,8 +14,10 @@
       {
         "label": "main",
         "title": "Promptbook Runner",
-        "width": 960,
-        "height": 640
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600
       }
     ],
     "security": {
