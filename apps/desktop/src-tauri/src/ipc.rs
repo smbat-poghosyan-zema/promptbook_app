@@ -296,11 +296,77 @@ pub fn get_run_detail(state: tauri::State<'_, IpcState>, run_id: i64) -> IpcResu
 
 #[tauri::command]
 pub fn list_agent_models(agent: String) -> IpcResult<Vec<IpcModelInfo>> {
-    use crate::agent_adapter::{models_for_agent, ModelInfo};
-    Ok(models_for_agent(&agent)
-        .into_iter()
-        .map(|m: ModelInfo| IpcModelInfo { id: m.id, name: m.name, supports_effort: m.supports_effort })
-        .collect())
+    let output = std::process::Command::new("openclaw")
+        .args(["models", "--status-json"])
+        .output()
+        .map_err(|err| format!("openclaw not found: {err}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "openclaw models failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("failed to parse openclaw output: {err}"))?;
+
+    let allowed = json
+        .get("allowed")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "openclaw output missing 'allowed' field".to_string())?;
+
+    let models: Vec<IpcModelInfo> = allowed
+        .iter()
+        .filter_map(|v| v.as_str())
+        .filter_map(|full_id| {
+            let (provider, model_id) = full_id.split_once('/')?;
+            let matches_agent = match agent.as_str() {
+                "claude" => provider == "anthropic",
+                "codex"  => provider == "openai" || provider == "openai-codex",
+                _        => false,
+            };
+            if !matches_agent {
+                return None;
+            }
+            let supports_effort = matches!(provider, "anthropic" | "openai" | "openai-codex");
+            let name = pretty_model_name(model_id);
+            Some(IpcModelInfo {
+                id: model_id.to_string(),
+                name,
+                supports_effort,
+            })
+        })
+        // Deduplicate by id (openai/ and openai-codex/ may repeat same model)
+        .fold(Vec::new(), |mut acc, m| {
+            if !acc.iter().any(|x: &IpcModelInfo| x.id == m.id) {
+                acc.push(m);
+            }
+            acc
+        });
+
+    Ok(models)
+}
+
+fn pretty_model_name(model_id: &str) -> String {
+    model_id
+        .split('-')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => {
+                    if first.is_ascii_digit() {
+                        part.to_string()
+                    } else {
+                        let upper = first.to_uppercase().collect::<String>();
+                        upper + chars.as_str()
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[tauri::command]
@@ -530,7 +596,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        list_agent_models, list_sample_promptbooks, resolve_sample_promptbooks_dir,
+        list_sample_promptbooks, pretty_model_name, resolve_sample_promptbooks_dir,
         IpcRunDetail, IpcRunRecord, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
     };
     use serde_json::json;
@@ -658,14 +724,9 @@ mod tests {
     }
 
     #[test]
-    fn list_agent_models_returns_claude_models() {
-        let result = list_agent_models("claude".to_string());
-        let models = result.expect("list claude models should succeed");
-        assert!(models.len() >= 2, "expected at least 2 claude models");
-        let supports_effort_count = models.iter().filter(|m| m.supports_effort).count();
-        assert!(
-            supports_effort_count >= 2,
-            "expected at least 2 claude models with supports_effort=true, got: {supports_effort_count}"
-        );
+    fn pretty_model_name_formats_correctly() {
+        assert_eq!(pretty_model_name("claude-sonnet-4-6"), "Claude Sonnet 4 6");
+        assert_eq!(pretty_model_name("gpt-5.3-codex-spark"), "Gpt 5.3 Codex Spark");
+        assert_eq!(pretty_model_name("claude-opus-4-6"), "Claude Opus 4 6");
     }
 }

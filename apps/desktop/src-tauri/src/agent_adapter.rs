@@ -203,55 +203,6 @@ fn shell_single_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\"'\"'"))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ModelInfo {
-    pub id: String,
-    pub name: String,
-    pub supports_effort: bool,
-}
-
-pub fn models_for_agent(agent_name: &str) -> Vec<ModelInfo> {
-    match agent_name {
-        "claude" => vec![
-            ModelInfo {
-                id: "claude-opus-4-6".into(),
-                name: "Claude Opus 4.6".into(),
-                supports_effort: true,
-            },
-            ModelInfo {
-                id: "claude-sonnet-4-6".into(),
-                name: "Claude Sonnet 4.6".into(),
-                supports_effort: true,
-            },
-            ModelInfo {
-                id: "claude-haiku-4-5".into(),
-                name: "Claude Haiku 4.5".into(),
-                supports_effort: true,
-            },
-        ],
-        "codex" => vec![
-            ModelInfo {
-                id: "gpt-5.3-codex".into(),
-                name: "GPT-5.3 Codex (latest)".into(),
-                supports_effort: true,
-            },
-            ModelInfo {
-                id: "gpt-5.2-codex".into(),
-                name: "GPT-5.2 Codex".into(),
-                supports_effort: true,
-            },
-            ModelInfo {
-                id: "o3".into(),
-                name: "o3".into(),
-                supports_effort: true,
-            },
-        ],
-        // Copilot CLI is not installed; no model selection supported.
-        // dry-run needs no model selection either.
-        _ => vec![],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -353,34 +304,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn models_for_agent_returns_correct_claude_models() {
-        use super::models_for_agent;
-        let models = models_for_agent("claude");
-        assert_eq!(models.len(), 3);
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&"claude-opus-4-6"));
-        assert!(ids.contains(&"claude-sonnet-4-6"));
-        assert!(ids.contains(&"claude-haiku-4-5"));
-        assert!(models.iter().all(|m| m.supports_effort));
-    }
-
-    #[test]
-    fn models_for_agent_returns_correct_codex_models() {
-        use super::models_for_agent;
-        let models = models_for_agent("codex");
-        assert_eq!(models.len(), 3);
-        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&"gpt-5.3-codex"));
-        assert!(ids.contains(&"gpt-5.2-codex"));
-        assert!(ids.contains(&"o3"));
-        assert!(models.iter().all(|m| m.supports_effort));
-    }
-
-    #[test]
-    fn models_for_agent_returns_empty_for_copilot_and_dry_run() {
-        use super::models_for_agent;
-        assert!(models_for_agent("copilot").is_empty());
-        assert!(models_for_agent("dry-run").is_empty());
-    }
 }
