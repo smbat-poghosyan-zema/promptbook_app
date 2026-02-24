@@ -1,7 +1,38 @@
 :root {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #0f172a;
-  background: #f8fafc;
+  
+  /* Brand Colors */
+  --brand-primary: #0f172a;
+  --brand-primary-hover: #1e293b;
+  --brand-danger: #dc2626;
+  --brand-danger-hover: #b91c1c;
+
+  /* Semantic Colors */
+  --bg-page: #f8fafc;
+  --bg-panel: #ffffff;
+  --bg-hover: #f1f5f9;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  
+  /* Borders */
+  --border-default: #cbd5e1;
+  --border-light: #e2e8f0;
+  
+  /* Spacing & Radii */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+
+  color: var(--text-primary);
+  background: var(--bg-page);
 }
 
 * {
@@ -35,9 +66,9 @@ select {
 }
 
 .panel {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 8px;
-  background: #fff;
+  background: var(--bg-panel);
 }
 
 .panel-header {
@@ -45,11 +76,11 @@ select {
   align-items: center;
   justify-content: space-between;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .build-info {
-  color: #475569;
+  color: var(--text-secondary);
   font-size: 0.85rem;
 }
 
@@ -67,9 +98,9 @@ select {
 
 .run-item {
   width: 100%;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
-  background: #fff;
+  background: var(--bg-panel);
   text-align: left;
   padding: 0.5rem;
   display: grid;
@@ -79,12 +110,12 @@ select {
 
 .run-item span {
   font-size: 0.85rem;
-  color: #475569;
+  color: var(--text-secondary);
 }
 
 .run-item.is-selected {
-  border-color: #0f172a;
-  background: #f1f5f9;
+  border-color: var(--brand-primary);
+  background: var(--bg-hover);
 }
 
 .main-column {
@@ -114,16 +145,16 @@ select {
 .dashboard-form input,
 .dashboard-form select,
 .dashboard-form button {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 0.45rem 0.6rem;
-  background: #fff;
+  background: var(--bg-panel);
 }
 
 .dashboard-form button[type="submit"] {
   justify-self: start;
-  background: #0f172a;
-  color: #fff;
+  background: var(--brand-primary);
+  color: var(--bg-panel);
 }
 
 .dashboard-form button[disabled] {
@@ -138,13 +169,13 @@ select {
 
 .dashboard-form .secondary-action {
   justify-self: start;
-  background: #f8fafc;
-  color: #0f172a;
+  background: var(--bg-page);
+  color: var(--text-primary);
 }
 
 .secondary-action {
-  background: #f8fafc;
-  color: #0f172a;
+  background: var(--bg-page);
+  color: var(--text-primary);
 }
 
 .danger-action {
@@ -178,14 +209,14 @@ select {
 .step-row {
   display: flex;
   flex-direction: column;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-light);
   border-radius: 6px;
   overflow: hidden;
 }
 
 .step-row.is-active {
-  border-color: #0f172a;
-  background: #f8fafc;
+  border-color: var(--brand-primary);
+  background: var(--bg-page);
 }
 
 /* Inner horizontal bar: player + select */
@@ -202,7 +233,7 @@ select {
   align-items: center;
   justify-content: center;
   width: 2.4rem;       /* slightly wider for breathing room */
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid var(--border-light);
   align-self: stretch; /* fill full row height */
 }
 
@@ -213,8 +244,8 @@ select {
   width: 1.8rem;
   height: 1.8rem;
   border-radius: 50%;
-  border: 1px solid #cbd5e1;
-  background: #fff;
+  border: 1px solid var(--border-default);
+  background: var(--bg-panel);
   cursor: pointer;
   font-size: 0.65rem;
   line-height: 1;
@@ -258,16 +289,16 @@ select {
 }
 
 .player-btn.pending-indicator {
-  border-color: #cbd5e1;
+  border-color: var(--border-default);
   color: #94a3b8;
-  background: #f8fafc;
+  background: var(--bg-page);
   cursor: default;
 }
 
 /* Expanded prompt area */
 .step-prompt-expand {
-  border-top: 1px solid #e2e8f0;
-  background: #f8fafc;
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-page);
   padding: 0.6rem 0.75rem;
 }
 
@@ -299,7 +330,7 @@ select {
 }
 
 .step-row-select:hover {
-  background: #f1f5f9;
+  background: var(--bg-hover);
 }
 
 /* STEP N badge */
@@ -309,8 +340,8 @@ select {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  background: #0f172a;
-  color: #fff;
+  background: var(--brand-primary);
+  color: var(--bg-panel);
   border-radius: 4px;
   padding: 0.1rem 0.35rem;
 }
@@ -328,7 +359,7 @@ select {
 /* Filler that pushes status+buttons to the right */
 .step-filler {
   flex: 1;
-  border-bottom: 1px dashed #cbd5e1;
+  border-bottom: 1px dashed var(--border-default);
   margin: 0 0.35rem;
   min-width: 0.5rem;
   align-self: center;
@@ -340,7 +371,7 @@ select {
   display: inline-block;
   border-radius: 999px;
   padding: 0.15rem 0.55rem;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   font-size: 0.78rem;
   white-space: nowrap;
   flex-shrink: 0;
@@ -367,8 +398,8 @@ select {
 .status-pill.stopped,
 .status-pill.cancelled {
   border-color: #94a3b8;
-  color: #475569;
-  background: #f8fafc;
+  color: var(--text-secondary);
+  background: var(--bg-page);
 }
 
 /* Run item header: title + badge side by side */
@@ -390,7 +421,7 @@ select {
 /* Meta lines (agent, workspace, step info) */
 .run-item-meta {
   font-size: 0.82rem;
-  color: #475569;
+  color: var(--text-secondary);
   overflow: hidden;
 }
 
@@ -416,14 +447,14 @@ select {
 }
 
 .split-tabs button {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
-  background: #fff;
+  background: var(--bg-panel);
   padding: 0.35rem 0.65rem;
 }
 
 .split-tabs .is-active {
-  border-color: #0f172a;
+  border-color: var(--brand-primary);
 }
 
 .split-pane-grid {
@@ -436,7 +467,7 @@ select {
 }
 
 .pane {
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 0.75rem;
   display: flex;
@@ -455,9 +486,9 @@ select {
 .pane pre {
   margin: 0;
   flex: 1;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border-light);
   border-radius: 6px;
-  background: #f8fafc;
+  background: var(--bg-page);
   padding: 0.6rem;
   overflow-y: auto;
   white-space: pre-wrap;
@@ -472,7 +503,7 @@ select {
 }
 
 .pane select {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 0.45rem 0.6rem;
 }
@@ -512,7 +543,7 @@ select {
 
 .toast button {
   border: 1px solid #fca5a5;
-  background: #fff;
+  background: var(--bg-panel);
   border-radius: 6px;
   padding: 0.25rem 0.5rem;
 }
@@ -533,15 +564,15 @@ select {
 
 .ame-field select {
   width: 100%;
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--border-default);
   border-radius: 6px;
   padding: 0.45rem 0.6rem;
-  background: #fff;
+  background: var(--bg-panel);
 }
 
 .ame-field select:disabled {
   opacity: 0.5;
-  background: #f1f5f9;
+  background: var(--bg-hover);
   cursor: not-allowed;
 }
 
