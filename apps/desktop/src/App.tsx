@@ -51,7 +51,7 @@ export function App() {
   const [runs, setRuns] = useState<IpcRunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [runDetail, setRunDetail] = useState<IpcRunDetail | null>(null);
-  const [selectedOutputStepId, setSelectedOutputStepId] = useState<string | null>(null);
+  const [activeStepId, setActiveStepId] = useState<string | null>(null);
   const [splitPane, setSplitPane] = useState<SplitPane>("live");
   const [dashboard, setDashboard] = useState<DashboardForm>({
     promptbookPath: "",
@@ -70,8 +70,8 @@ export function App() {
 
   const runList = useMemo(() => createRunListViewModel(runs), [runs]);
   const detailViewModel = useMemo(
-    () => createRunDetailViewModel(runDetail, selectedOutputStepId),
-    [runDetail, selectedOutputStepId]
+    () => createRunDetailViewModel(runDetail, activeStepId),
+    [runDetail, activeStepId]
   );
 
   const selectedModelInfo = availableModels.find((m) => m.id === dashboard.model) ?? null;
@@ -183,16 +183,13 @@ export function App() {
 
   useEffect(() => {
     if (!runDetail) {
-      setSelectedOutputStepId(null);
+      setActiveStepId(null);
       return;
     }
-    const selectedExists =
-      selectedOutputStepId !== null &&
-      runDetail.outputs.some((output) => output.step_id === selectedOutputStepId);
-    if (!selectedExists) {
-      setSelectedOutputStepId(runDetail.outputs[0]?.step_id ?? null);
-    }
-  }, [runDetail, selectedOutputStepId]);
+    const runningStep = runDetail.steps.find((s) => s.status === "running");
+    const fallback = runDetail.steps[0];
+    setActiveStepId(runningStep?.step_id ?? fallback?.step_id ?? null);
+  }, [runDetail?.run.id]);
 
   useEffect(() => {
     let stop: UnlistenFn | null = null;
@@ -206,6 +203,9 @@ export function App() {
         }
         return applyRunEvent(current, runEvent);
       });
+      if (runEvent.type === "step_started" && runEvent.step_id) {
+        setActiveStepId(runEvent.step_id);
+      }
       if (runEvent.type === "run_finished") {
         void loadRuns();
       }
@@ -486,73 +486,70 @@ export function App() {
                   <li className="empty-state">No steps recorded yet.</li>
                 ) : (
                   detailViewModel.stepRows.map((step) => (
-                    <li key={step.stepId} className="step-row">
-                      <span>{step.title}</span>
-                      <span className={`status-pill ${step.status}`}>{step.status}</span>
+                    <li key={step.stepId} className={`step-row ${step.isActive ? "is-active" : ""}`}>
+                      <button
+                        type="button"
+                        className="step-row-btn"
+                        onClick={() => setActiveStepId(step.stepId)}
+                      >
+                        <span className="step-title">{step.title}</span>
+                        <span className={`status-pill ${step.status}`}>{step.status}</span>
+                      </button>
                     </li>
                   ))
                 )}
               </ul>
 
-              <div className="split-tabs" role="tablist" aria-label="run detail panes">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={splitPane === "live"}
-                  className={splitPane === "live" ? "is-active" : ""}
-                  onClick={() => setSplitPane("live")}
-                >
-                  {detailViewModel.liveProgressTitle}
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={splitPane === "final"}
-                  className={splitPane === "final" ? "is-active" : ""}
-                  onClick={() => setSplitPane("final")}
-                >
-                  {detailViewModel.finalOutputTitle}
-                </button>
-              </div>
+              {detailViewModel.activeStep ? (
+                <>
+                  <div className="split-tabs" role="tablist" aria-label="run detail panes">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={splitPane === "live"}
+                      className={splitPane === "live" ? "is-active" : ""}
+                      onClick={() => setSplitPane("live")}
+                    >
+                      {detailViewModel.liveProgressTitle}
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={splitPane === "final"}
+                      className={splitPane === "final" ? "is-active" : ""}
+                      onClick={() => setSplitPane("final")}
+                    >
+                      {detailViewModel.finalOutputTitle}
+                    </button>
+                  </div>
 
-              <div className={`split-pane-grid ${splitPane === "live" ? "show-live" : "show-final"}`}>
-                <section className="pane live-pane">
-                  <h3>{detailViewModel.liveProgressTitle}</h3>
-                  {detailViewModel.liveLines.length === 0 ? (
-                    <p className="empty-state">No live progress lines yet.</p>
-                  ) : (
-                    <pre>{detailViewModel.liveLines.join("\n")}</pre>
-                  )}
-                </section>
-
-                <section className="pane final-pane">
-                  <h3>{detailViewModel.finalOutputTitle}</h3>
-                  {detailViewModel.outputOptions.length === 0 ? (
-                    <p className="empty-state">No final outputs yet.</p>
-                  ) : (
-                    <>
-                      <label>
-                        Step output
-                        <select
-                          value={selectedOutputStepId ?? detailViewModel.outputOptions[0]?.stepId}
-                          onChange={(event) => setSelectedOutputStepId(event.target.value)}
-                        >
-                          {detailViewModel.outputOptions.map((option) => (
-                            <option key={option.stepId} value={option.stepId}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      {detailViewModel.selectedOutput ? (
-                        <pre>{detailViewModel.selectedOutput.content}</pre>
+                  <div className={`split-pane-grid ${splitPane === "live" ? "show-live" : "show-final"}`}>
+                    <section className="pane live-pane">
+                      <h3>{detailViewModel.liveProgressTitle} — {detailViewModel.activeStep.title}</h3>
+                      {detailViewModel.activeStep.liveLines.length === 0 ? (
+                        <p className="empty-state">No live progress yet.</p>
                       ) : (
-                        <p className="empty-state">Select a step to see final output.</p>
+                        <pre>{detailViewModel.activeStep.liveLines.join("\n")}</pre>
                       )}
-                    </>
-                  )}
-                </section>
-              </div>
+                    </section>
+
+                    <section className="pane final-pane">
+                      <h3>{detailViewModel.finalOutputTitle} — {detailViewModel.activeStep.title}</h3>
+                      {detailViewModel.activeStep.finalOutput === null ? (
+                        <p className="empty-state">
+                          {detailViewModel.activeStep.status === "running"
+                            ? "Step in progress — final output will appear when done."
+                            : "No final output for this step."}
+                        </p>
+                      ) : (
+                        <pre>{detailViewModel.activeStep.finalOutput}</pre>
+                      )}
+                    </section>
+                  </div>
+                </>
+              ) : (
+                <p className="empty-state">Select a step to view its output.</p>
+              )}
             </>
           )}
         </section>

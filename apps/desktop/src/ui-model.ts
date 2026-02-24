@@ -79,24 +79,20 @@ export type RunListItemViewModel = {
   stepInfo: string;
 };
 
+export type StepViewModel = {
+  stepId: string;
+  title: string;
+  status: string;
+  isActive: boolean;
+  liveLines: string[];
+  finalOutput: string | null;
+};
+
 export type RunDetailViewModel = {
   liveProgressTitle: "Live Progress";
   finalOutputTitle: "Final Output";
-  stepRows: Array<{
-    stepId: string;
-    title: string;
-    status: string;
-  }>;
-  liveLines: string[];
-  outputOptions: Array<{
-    stepId: string;
-    label: string;
-  }>;
-  selectedOutput: {
-    stepId: string;
-    content: string;
-    format: string;
-  } | null;
+  stepRows: StepViewModel[];
+  activeStep: StepViewModel | null;
 };
 
 function readString(payload: Record<string, unknown>, key: string): string | null {
@@ -154,50 +150,53 @@ export function createRunListViewModel(runs: IpcRunRecord[]): RunListItemViewMod
 
 export function createRunDetailViewModel(
   detail: IpcRunDetail | null,
-  selectedOutputStepId: string | null
+  activeStepId: string | null
 ): RunDetailViewModel {
   if (!detail) {
     return {
       liveProgressTitle: "Live Progress",
       finalOutputTitle: "Final Output",
       stepRows: [],
-      liveLines: [],
-      outputOptions: [],
-      selectedOutput: null
+      activeStep: null
     };
   }
 
-  const stepsById = new Map(detail.steps.map((step) => [step.step_id, step]));
-  const outputOptions = detail.outputs.map((output) => ({
-    stepId: output.step_id,
-    label: stepsById.get(output.step_id)?.title ?? output.step_id
-  }));
-  const fallbackStepId = detail.outputs[0]?.step_id ?? null;
-  const resolvedStepId = selectedOutputStepId ?? fallbackStepId;
-  const selectedOutput =
-    resolvedStepId === null
-      ? null
-      : detail.outputs.find((output) => output.step_id === resolvedStepId) ?? null;
+  const logsByStep = new Map<string, IpcLogRecord[]>();
+  for (const log of detail.logs) {
+    const arr = logsByStep.get(log.step_id) ?? [];
+    arr.push(log);
+    logsByStep.set(log.step_id, arr);
+  }
+  const outputByStep = new Map(detail.outputs.map((o) => [o.step_id, o]));
+
+  const runningIdx = detail.steps.findIndex((s) => s.status === "running");
+  const nextStepId =
+    runningIdx >= 0 && runningIdx + 1 < detail.steps.length
+      ? detail.steps[runningIdx + 1].step_id
+      : null;
+
+  const stepRows: StepViewModel[] = detail.steps.map((step) => {
+    const isNext = step.step_id === nextStepId;
+    const displayStatus = isNext ? "next" : step.status;
+    const logs = logsByStep.get(step.step_id) ?? [];
+    const output = outputByStep.get(step.step_id);
+    return {
+      stepId: step.step_id,
+      title: step.title,
+      status: displayStatus,
+      isActive: step.step_id === activeStepId,
+      liveLines: logs.map((l) => `[${l.stream}] ${l.line}`),
+      finalOutput: output?.content ?? null
+    };
+  });
+
+  const activeStep = stepRows.find((s) => s.isActive) ?? stepRows[0] ?? null;
 
   return {
     liveProgressTitle: "Live Progress",
     finalOutputTitle: "Final Output",
-    stepRows: detail.steps.map((step) => ({
-      stepId: step.step_id,
-      title: step.title,
-      status: step.status
-    })),
-    liveLines: detail.logs.map(
-      (log) => `${log.ts} [${log.stream}] ${log.step_id}: ${log.line}`
-    ),
-    outputOptions,
-    selectedOutput: selectedOutput
-      ? {
-          stepId: selectedOutput.step_id,
-          content: selectedOutput.content,
-          format: selectedOutput.format
-        }
-      : null
+    stepRows,
+    activeStep
   };
 }
 

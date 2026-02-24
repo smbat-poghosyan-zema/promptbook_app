@@ -113,7 +113,7 @@ describe("shared schema smoke", () => {
 
     expect(viewModel.liveProgressTitle).toBe("Live Progress");
     expect(viewModel.finalOutputTitle).toBe("Final Output");
-    expect(viewModel.liveLines.some((line) => line.includes("planning..."))).toBe(true);
-    expect(viewModel.selectedOutput?.content).toBe("Final answer A");
+    expect(viewModel.activeStep?.liveLines.some((line) => line.includes("planning..."))).toBe(true);
+    expect(viewModel.activeStep?.finalOutput).toBe("Final answer A");
   });
 });

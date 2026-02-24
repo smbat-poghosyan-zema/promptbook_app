@@ -122,15 +122,48 @@ describe("ui model", () => {
   it("returns empty detail model when no run is selected", () => {
     const viewModel = createRunDetailViewModel(null, null);
     expect(viewModel.stepRows).toEqual([]);
-    expect(viewModel.liveLines).toEqual([]);
-    expect(viewModel.selectedOutput).toBeNull();
+    expect(viewModel.activeStep).toBeNull();
   });
 
-  it("keeps selected output null when a non-existent step is selected", () => {
+  it("sets activeStep to the matching step when activeStepId is given", () => {
+    const viewModel = createRunDetailViewModel(buildRunDetail(), "step-1");
+    expect(viewModel.activeStep?.stepId).toBe("step-1");
+    expect(viewModel.activeStep?.finalOutput).toBe("FINAL: first");
+  });
+
+  it("falls back to first step when activeStepId is null", () => {
+    const viewModel = createRunDetailViewModel(buildRunDetail(), null);
+    expect(viewModel.activeStep?.stepId).toBe("step-1");
+  });
+
+  it("falls back to first step when activeStepId does not match any step", () => {
     const viewModel = createRunDetailViewModel(buildRunDetail(), "missing-step");
-    expect(viewModel.selectedOutput).toBeNull();
-    expect(createRunDetailViewModel(buildRunDetail(), null).selectedOutput?.stepId).toBe("step-1");
-    expect(viewModel.outputOptions.map((item) => item.stepId)).toEqual(["step-1", "step-2"]);
+    expect(viewModel.activeStep?.stepId).toBe("step-1");
+  });
+
+  it("marks the step after the running step as 'next'", () => {
+    const detail: IpcRunDetail = {
+      ...buildRunDetail(),
+      steps: [
+        { id: 1, run_id: 11, step_id: "step-1", title: "Step one", status: "running", started_at: null, finished_at: null },
+        { id: 2, run_id: 11, step_id: "step-2", title: "Step two", status: "pending", started_at: null, finished_at: null }
+      ]
+    };
+    const viewModel = createRunDetailViewModel(detail, "step-1");
+    expect(viewModel.stepRows[0]?.status).toBe("running");
+    expect(viewModel.stepRows[1]?.status).toBe("next");
+  });
+
+  it("shows liveLines only for the active step", () => {
+    const detail: IpcRunDetail = {
+      ...buildRunDetail(),
+      logs: [
+        { id: 1, run_id: 11, step_id: "step-1", ts: "t1", stream: "stdout", line: "line from step-1" },
+        { id: 2, run_id: 11, step_id: "step-2", ts: "t2", stream: "stderr", line: "line from step-2" }
+      ]
+    };
+    const viewModel = createRunDetailViewModel(detail, "step-1");
+    expect(viewModel.activeStep?.liveLines).toEqual(["[stdout] line from step-1"]);
   });
 
   it("applies progress events and ignores empty progress lines", () => {
