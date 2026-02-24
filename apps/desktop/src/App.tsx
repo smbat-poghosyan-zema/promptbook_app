@@ -1,4 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   applyRunEvent,
   createRunDetailViewModel,
@@ -28,212 +30,18 @@ type IpcSamplePromptbook = {
   path: string;
 };
 
-type TauriListenerPayload<T> = {
-  payload: T;
-};
-
 const BUILD_INFO = `v${__APP_VERSION__} (${import.meta.env.MODE})`;
 
 const AGENT_OPTIONS = ["codex", "claude", "copilot", "dry-run"];
-const FALLBACK_SAMPLE_PROMPTBOOKS: IpcSamplePromptbook[] = [
-  {
-    id: "hello-world",
-    title: "hello world",
-    path: "sample-promptbooks/hello-world.v1.yaml"
-  },
-  {
-    id: "repo-audit",
-    title: "repo audit",
-    path: "sample-promptbooks/repo-audit.v1.yaml"
-  }
-];
-
-const FALLBACK_RUNS: IpcRunRecord[] = [
-  {
-    id: 101,
-    promptbook_name: "build-promptbook-runner",
-    promptbook_version: "1.0.0",
-    status: "running",
-    started_at: "2026-02-21T00:15:35.966Z",
-    finished_at: null,
-    agent_default: "codex",
-    metadata_json: null
-  },
-  {
-    id: 100,
-    promptbook_name: "hello-world",
-    promptbook_version: "1.0.0",
-    status: "success",
-    started_at: "2026-02-21T00:10:10.000Z",
-    finished_at: "2026-02-21T00:10:30.000Z",
-    agent_default: "dry-run",
-    metadata_json: null
-  }
-];
-
-const FALLBACK_RUN_DETAILS: Record<number, IpcRunDetail> = {
-  101: {
-    run: FALLBACK_RUNS[0],
-    steps: [
-      {
-        id: 1,
-        run_id: 101,
-        step_id: "step-setup",
-        title: "Prepare workspace",
-        status: "success",
-        started_at: "2026-02-21T00:15:36.200Z",
-        finished_at: "2026-02-21T00:15:37.000Z"
-      },
-      {
-        id: 2,
-        run_id: 101,
-        step_id: "step-ui",
-        title: "Implement UI MVP",
-        status: "running",
-        started_at: "2026-02-21T00:15:37.010Z",
-        finished_at: null
-      }
-    ],
-    logs: [
-      {
-        id: 1,
-        run_id: 101,
-        step_id: "step-setup",
-        ts: "2026-02-21T00:15:36.500Z",
-        stream: "stdout",
-        line: "workspace prepared"
-      },
-      {
-        id: 2,
-        run_id: 101,
-        step_id: "step-ui",
-        ts: "2026-02-21T00:15:37.500Z",
-        stream: "stderr",
-        line: "running UI tests..."
-      }
-    ],
-    outputs: [
-      {
-        id: 1,
-        run_id: 101,
-        step_id: "step-setup",
-        ts: "2026-02-21T00:15:37.010Z",
-        content: "Workspace prepared and .promptbook_runs initialized.",
-        format: "text"
-      }
-    ]
-  },
-  100: {
-    run: FALLBACK_RUNS[1],
-    steps: [
-      {
-        id: 3,
-        run_id: 100,
-        step_id: "step-hello",
-        title: "Hello world",
-        status: "success",
-        started_at: "2026-02-21T00:10:10.100Z",
-        finished_at: "2026-02-21T00:10:20.100Z"
-      }
-    ],
-    logs: [
-      {
-        id: 3,
-        run_id: 100,
-        step_id: "step-hello",
-        ts: "2026-02-21T00:10:15.000Z",
-        stream: "stdout",
-        line: "hello complete"
-      }
-    ],
-    outputs: [
-      {
-        id: 2,
-        run_id: 100,
-        step_id: "step-hello",
-        ts: "2026-02-21T00:10:20.100Z",
-        content: "Hello from Promptbook Runner.",
-        format: "text"
-      }
-    ]
-  }
-};
-
-function cloneDetail(detail: IpcRunDetail): IpcRunDetail {
-  return {
-    run: { ...detail.run },
-    steps: detail.steps.map((step) => ({ ...step })),
-    logs: detail.logs.map((log) => ({ ...log })),
-    outputs: detail.outputs.map((output) => ({ ...output }))
-  };
-}
 
 function getErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.length > 0) {
+    return error;
+  }
   if (error instanceof Error && error.message.length > 0) {
     return error.message;
   }
   return "Unexpected error";
-}
-
-function resolveTauriInvoke():
-  | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>)
-  | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const tauriWindow = window as Window & {
-    __TAURI__?: {
-      core?: {
-        invoke?: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-      };
-      tauri?: {
-        invoke?: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-      };
-    };
-  };
-
-  if (tauriWindow.__TAURI__?.core?.invoke) {
-    return tauriWindow.__TAURI__.core.invoke;
-  }
-  if (tauriWindow.__TAURI__?.tauri?.invoke) {
-    return tauriWindow.__TAURI__.tauri.invoke;
-  }
-  return null;
-}
-
-function resolveTauriListen():
-  | (<T>(
-      eventName: string,
-      handler: (event: TauriListenerPayload<T>) => void
-    ) => Promise<() => void>)
-  | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  const tauriWindow = window as Window & {
-    __TAURI__?: {
-      event?: {
-        listen?: <T>(
-          eventName: string,
-          handler: (event: TauriListenerPayload<T>) => void
-        ) => Promise<() => void>;
-      };
-    };
-  };
-
-  return tauriWindow.__TAURI__?.event?.listen ?? null;
-}
-
-async function invokeIpc<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  const invoke = resolveTauriInvoke();
-  if (!invoke) {
-    throw new Error("Tauri runtime not available");
-  }
-  return invoke<T>(command, args);
-}
-
-function hasTauriRuntime(): boolean {
-  return resolveTauriInvoke() !== null;
 }
 
 export function App() {
@@ -282,11 +90,7 @@ export function App() {
   async function loadRuns(): Promise<void> {
     setIsLoadingRuns(true);
     try {
-      if (!hasTauriRuntime()) {
-        setRuns(FALLBACK_RUNS);
-        return;
-      }
-      const loaded = await invokeIpc<IpcRunRecord[]>("list_runs");
+      const loaded = await invoke<IpcRunRecord[]>("list_runs");
       setRuns(loaded);
     } catch (error) {
       pushErrorToast(`Failed to load runs: ${getErrorMessage(error)}`);
@@ -297,11 +101,7 @@ export function App() {
 
   async function loadSamplePromptbooks(): Promise<void> {
     try {
-      if (!hasTauriRuntime()) {
-        setSamplePromptbooks(FALLBACK_SAMPLE_PROMPTBOOKS);
-        return;
-      }
-      const loaded = await invokeIpc<IpcSamplePromptbook[]>("list_sample_promptbooks");
+      const loaded = await invoke<IpcSamplePromptbook[]>("list_sample_promptbooks");
       setSamplePromptbooks(loaded);
     } catch (error) {
       pushErrorToast(`Failed to load sample promptbooks: ${getErrorMessage(error)}`);
@@ -311,14 +111,8 @@ export function App() {
   async function loadRunDetail(runId: number): Promise<void> {
     setIsLoadingRunDetail(true);
     try {
-      if (!hasTauriRuntime()) {
-        const fallbackDetail = FALLBACK_RUN_DETAILS[runId];
-        setRunDetail(fallbackDetail ? cloneDetail(fallbackDetail) : null);
-        return;
-      }
-      const loaded = await invokeIpc<IpcRunDetail | null>("get_run_detail", {
-        runId,
-        run_id: runId
+      const loaded = await invoke<IpcRunDetail | null>("get_run_detail", {
+        runId
       });
       setRunDetail(loaded);
     } catch (error) {
@@ -380,15 +174,7 @@ export function App() {
   }, [runDetail, selectedOutputStepId]);
 
   useEffect(() => {
-    if (!hasTauriRuntime()) {
-      return;
-    }
-    const listen = resolveTauriListen();
-    if (!listen) {
-      return;
-    }
-
-    let stop: (() => void) | null = null;
+    let stop: UnlistenFn | null = null;
     let isMounted = true;
 
     listen<RunEventEnvelope>("run_event", (event) => {
@@ -424,14 +210,7 @@ export function App() {
 
   async function handlePromptbookPicker(): Promise<void> {
     try {
-      if (!hasTauriRuntime()) {
-        setDashboard((current) => ({
-          ...current,
-          promptbookPath: current.promptbookPath || "promptbooks/hello-world.v1.yaml"
-        }));
-        return;
-      }
-      const selectedPath = await invokeIpc<string | null>("open_file_picker_for_promptbook");
+      const selectedPath = await invoke<string | null>("open_file_picker_for_promptbook");
       if (selectedPath) {
         setDashboard((current) => ({ ...current, promptbookPath: selectedPath }));
       }
@@ -442,12 +221,7 @@ export function App() {
 
   async function handleOpenSamplePromptbooksFolder(): Promise<void> {
     try {
-      if (!hasTauriRuntime()) {
-        pushToast("Sample promptbooks folder: sample-promptbooks", "info");
-        return;
-      }
-      const sampleFolderPath = await invokeIpc<string>("open_sample_promptbooks_folder");
-      pushToast(`Sample promptbooks folder: ${sampleFolderPath}`, "info");
+      await invoke<string>("open_sample_promptbooks_folder");
     } catch (error) {
       pushErrorToast(`Failed to open sample promptbooks folder: ${getErrorMessage(error)}`);
     }
@@ -482,36 +256,10 @@ export function App() {
 
     setIsStartingRun(true);
     try {
-      if (!hasTauriRuntime()) {
-        const runId = Date.now();
-        const now = new Date().toISOString();
-        const mockRun: IpcRunRecord = {
-          id: runId,
-          promptbook_name: dashboard.promptbookPath.split("/").pop() ?? "new-run",
-          promptbook_version: "1.0.0",
-          status: "running",
-          started_at: now,
-          finished_at: null,
-          agent_default: dashboard.agent,
-          metadata_json: null
-        };
-        setRuns((current) => [mockRun, ...current]);
-        setSelectedRunId(runId);
-        setRunDetail({
-          run: mockRun,
-          steps: [],
-          logs: [],
-          outputs: []
-        });
-        return;
-      }
-
-      const runId = await invokeIpc<number>("start_run", {
+      const runId = await invoke<number>("start_run", {
         promptbookPath: dashboard.promptbookPath,
-        promptbook_path: dashboard.promptbookPath,
         agent: dashboard.agent,
-        workspaceDir: dashboard.workspaceDir,
-        workspace_dir: dashboard.workspaceDir
+        workspaceDir: dashboard.workspaceDir
       });
       await loadRuns();
       setSelectedRunId(runId);

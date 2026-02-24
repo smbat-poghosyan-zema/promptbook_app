@@ -313,9 +313,20 @@ fn resolve_sample_promptbooks_dir() -> IpcResult<PathBuf> {
 }
 
 #[tauri::command]
-pub fn open_sample_promptbooks_folder() -> IpcResult<String> {
+pub async fn open_sample_promptbooks_folder(
+    app_handle: tauri::AppHandle,
+) -> IpcResult<String> {
+    use tauri_plugin_shell::ShellExt;
     let sample_dir = resolve_sample_promptbooks_dir()?;
-    Ok(sample_dir.to_string_lossy().to_string())
+    let path_str = sample_dir.to_string_lossy().to_string();
+    // Open in system file manager (xdg-open on Linux)
+    app_handle
+        .shell()
+        .command("xdg-open")
+        .args([&path_str])
+        .spawn()
+        .map_err(|err| err.to_string())?;
+    Ok(path_str)
 }
 
 #[tauri::command]
@@ -413,7 +424,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        list_sample_promptbooks, open_sample_promptbooks_folder,
+        list_sample_promptbooks, resolve_sample_promptbooks_dir,
         IpcRunDetail, IpcRunRecord, RunEventEnvelope, RunEventType, RUN_EVENT_NAME,
     };
     use serde_json::json;
@@ -524,8 +535,8 @@ mod tests {
 
         let _sample_guard = set_env_var("PROMPTBOOK_SAMPLE_DIR", Some(&temp.to_string_lossy()));
 
-        let folder = open_sample_promptbooks_folder().expect("resolve sample folder");
-        assert_eq!(folder, temp.to_string_lossy());
+        let folder = resolve_sample_promptbooks_dir().expect("resolve sample folder");
+        assert_eq!(folder.to_string_lossy(), temp.to_string_lossy());
 
         let samples = list_sample_promptbooks().expect("list samples");
         let sample_ids = samples.iter().map(|sample| sample.id.as_str()).collect::<Vec<_>>();
